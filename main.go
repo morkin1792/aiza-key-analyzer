@@ -54,6 +54,10 @@ type ServiceCheck struct {
 	Name         string
 	Category     string
 	NeedsProject bool
+	// PoC is a shell command template the user can copy to verify or exploit
+	// this finding. {KEY} and {PROJECT} placeholders are substituted with the
+	// real values at output time. Populated only on vulnerable findings.
+	PoC string
 	// Run receives the URL-encoded key (already passed through url.QueryEscape).
 	// Do NOT call url.QueryEscape again inside check functions.
 	Run func(key, projectID string) CheckResult
@@ -65,6 +69,7 @@ type CheckResult struct {
 	Status   Status `json:"-"`
 	StatusS  string `json:"status"`
 	Detail   string `json:"detail"`
+	PoC      string `json:"poc,omitempty"`
 	RawJSON  string `json:"raw_json,omitempty"`
 }
 
@@ -218,6 +223,7 @@ func gatewayCheck(key, fallbackProject string) gatewayResult {
 			rmDetail = "API accessible (parse error)"
 		}
 		rmCR := cr("Cloud Resource Manager", "GCP", StatusVulnerable, rmDetail, body)
+		rmCR.PoC = fillPoC("curl -s 'https://cloudresourcemanager.googleapis.com/v1/projects?key={KEY}'", key, "")
 		gr := gatewayResult{status: "ok", rmResult: &rmCR}
 		if len(resp.Projects) > 0 {
 			gr.projectID = resp.Projects[0].ProjectID
@@ -350,6 +356,7 @@ func buildChecks() []ServiceCheck {
 func check4_2() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Storage", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://storage.googleapis.com/storage/v1/b?project={PROJECT}&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b?project=%s&key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -377,7 +384,7 @@ func check4_2() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Storage", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Storage", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Storage", "GCP", code, body)
 		},
 	}
 }
@@ -385,6 +392,7 @@ func check4_2() ServiceCheck {
 func check4_3() ServiceCheck {
 	return ServiceCheck{
 		Name: "Compute Engine", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://www.googleapis.com/compute/v1/projects/{PROJECT}/aggregated/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://www.googleapis.com/compute/v1/projects/%s/aggregated/instances?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -420,7 +428,7 @@ func check4_3() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Compute Engine", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Compute Engine", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Compute Engine", "GCP", code, body)
 		},
 	}
 }
@@ -428,6 +436,7 @@ func check4_3() ServiceCheck {
 func check4_4() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud SQL", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://www.googleapis.com/sql/v1beta4/projects/{PROJECT}/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://www.googleapis.com/sql/v1beta4/projects/%s/instances?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -455,7 +464,7 @@ func check4_4() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud SQL", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud SQL", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud SQL", "GCP", code, body)
 		},
 	}
 }
@@ -463,6 +472,7 @@ func check4_4() ServiceCheck {
 func check4_5() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud DNS", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://dns.googleapis.com/dns/v1/projects/{PROJECT}/managedZones?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://dns.googleapis.com/dns/v1/projects/%s/managedZones?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -490,7 +500,7 @@ func check4_5() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud DNS", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud DNS", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud DNS", "GCP", code, body)
 		},
 	}
 }
@@ -498,6 +508,7 @@ func check4_5() ServiceCheck {
 func check4_6() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Functions", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://cloudfunctions.googleapis.com/v2/projects/{PROJECT}/locations/-/functions?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			// Query both v1 (Gen 1) and v2 (Gen 2) endpoints sequentially.
 			// This makes two HTTP calls in one goroutine — worst case 2× timeout.
@@ -597,6 +608,7 @@ func check4_6() ServiceCheck {
 func check4_7() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Run", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://run.googleapis.com/v2/projects/{PROJECT}/locations/-/services?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/-/services?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -628,7 +640,7 @@ func check4_7() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Run", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Run", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Run", "GCP", code, body)
 		},
 	}
 }
@@ -636,6 +648,7 @@ func check4_7() ServiceCheck {
 func check4_8() ServiceCheck {
 	return ServiceCheck{
 		Name: "GKE", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://container.googleapis.com/v1/projects/{PROJECT}/locations/-/clusters?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://container.googleapis.com/v1/projects/%s/locations/-/clusters?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -664,7 +677,7 @@ func check4_8() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("GKE", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("GKE", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("GKE", "GCP", code, body)
 		},
 	}
 }
@@ -672,6 +685,7 @@ func check4_8() ServiceCheck {
 func check4_9() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Pub/Sub", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://pubsub.googleapis.com/v1/projects/{PROJECT}/topics?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://pubsub.googleapis.com/v1/projects/%s/topics?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -698,7 +712,7 @@ func check4_9() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Pub/Sub", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Pub/Sub", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Pub/Sub", "GCP", code, body)
 		},
 	}
 }
@@ -706,6 +720,7 @@ func check4_9() ServiceCheck {
 func check4_10() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Spanner", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://spanner.googleapis.com/v1/projects/{PROJECT}/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://spanner.googleapis.com/v1/projects/%s/instances?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -733,7 +748,7 @@ func check4_10() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Spanner", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Spanner", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Spanner", "GCP", code, body)
 		},
 	}
 }
@@ -741,6 +756,7 @@ func check4_10() ServiceCheck {
 func check4_11() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Bigtable", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://bigtableadmin.googleapis.com/v2/projects/{PROJECT}/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://bigtableadmin.googleapis.com/v2/projects/%s/instances?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -767,7 +783,7 @@ func check4_11() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Bigtable", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Bigtable", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Bigtable", "GCP", code, body)
 		},
 	}
 }
@@ -775,6 +791,7 @@ func check4_11() ServiceCheck {
 func check4_12() ServiceCheck {
 	return ServiceCheck{
 		Name: "Secret Manager", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://secretmanager.googleapis.com/v1/projects/{PROJECT}/secrets?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -801,7 +818,7 @@ func check4_12() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Secret Manager", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Secret Manager", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Secret Manager", "GCP", code, body)
 		},
 	}
 }
@@ -809,6 +826,7 @@ func check4_12() ServiceCheck {
 func check4_13() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Logging", Category: "GCP", NeedsProject: true,
+		PoC: `curl -s -X POST 'https://logging.googleapis.com/v2/entries:list?key={KEY}' -H 'Content-Type: application/json' -d '{"resourceNames":["projects/{PROJECT}"],"pageSize":5}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://logging.googleapis.com/v2/entries:list?key=" + key
 			payload := map[string]interface{}{
@@ -835,7 +853,7 @@ func check4_13() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Logging", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Logging", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Logging", "GCP", code, body)
 		},
 	}
 }
@@ -843,6 +861,7 @@ func check4_13() ServiceCheck {
 func check4_14() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Monitoring", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://monitoring.googleapis.com/v3/projects/{PROJECT}/metricDescriptors?key={KEY}&pageSize=3'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://monitoring.googleapis.com/v3/projects/%s/metricDescriptors?key=%s&pageSize=3", projectID, key)
 			code, body, err := doGet(url)
@@ -855,7 +874,7 @@ func check4_14() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Monitoring", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Monitoring", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Monitoring", "GCP", code, body)
 		},
 	}
 }
@@ -863,6 +882,7 @@ func check4_14() ServiceCheck {
 func check4_15() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Tasks", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://cloudtasks.googleapis.com/v2/projects/{PROJECT}/locations/-/queues?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://cloudtasks.googleapis.com/v2/projects/%s/locations/-/queues?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -889,7 +909,7 @@ func check4_15() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Tasks", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Tasks", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Tasks", "GCP", code, body)
 		},
 	}
 }
@@ -897,6 +917,7 @@ func check4_15() ServiceCheck {
 func check4_16() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Scheduler", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://cloudscheduler.googleapis.com/v1/projects/{PROJECT}/locations/-/jobs?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://cloudscheduler.googleapis.com/v1/projects/%s/locations/-/jobs?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -924,7 +945,7 @@ func check4_16() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Scheduler", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Scheduler", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Scheduler", "GCP", code, body)
 		},
 	}
 }
@@ -932,6 +953,7 @@ func check4_16() ServiceCheck {
 func check4_17() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Build", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://cloudbuild.googleapis.com/v1/projects/{PROJECT}/builds?key={KEY}&pageSize=3'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://cloudbuild.googleapis.com/v1/projects/%s/builds?key=%s&pageSize=3", projectID, key)
 			code, body, err := doGet(url)
@@ -959,7 +981,7 @@ func check4_17() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Build", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Build", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Build", "GCP", code, body)
 		},
 	}
 }
@@ -967,6 +989,7 @@ func check4_17() ServiceCheck {
 func check4_18() ServiceCheck {
 	return ServiceCheck{
 		Name: "Artifact Registry", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://artifactregistry.googleapis.com/v1/projects/{PROJECT}/locations/-/repositories?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://artifactregistry.googleapis.com/v1/projects/%s/locations/-/repositories?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -994,7 +1017,7 @@ func check4_18() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Artifact Registry", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Artifact Registry", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Artifact Registry", "GCP", code, body)
 		},
 	}
 }
@@ -1002,6 +1025,7 @@ func check4_18() ServiceCheck {
 func check4_19() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Firestore", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents?key={KEY}&pageSize=3'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://firestore.googleapis.com/v1/projects/%s/databases/(default)/documents?key=%s&pageSize=3", projectID, key)
 			code, body, err := doGet(url)
@@ -1028,7 +1052,7 @@ func check4_19() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Firestore", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Firestore", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Firestore", "GCP", code, body)
 		},
 	}
 }
@@ -1036,6 +1060,7 @@ func check4_19() ServiceCheck {
 func check4_20() ServiceCheck {
 	return ServiceCheck{
 		Name: "BigQuery", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://bigquery.googleapis.com/bigquery/v2/projects/{PROJECT}/datasets?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://bigquery.googleapis.com/bigquery/v2/projects/%s/datasets?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -1065,7 +1090,7 @@ func check4_20() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("BigQuery", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("BigQuery", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("BigQuery", "GCP", code, body)
 		},
 	}
 }
@@ -1075,6 +1100,7 @@ func check4_20() ServiceCheck {
 func check4_21() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Auth Signup", Category: "Firebase", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={KEY}' -H 'Content-Type: application/json' -d '{"returnSecureToken":true}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + key
 			payload := map[string]interface{}{"returnSecureToken": true}
@@ -1092,7 +1118,7 @@ func check4_21() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Firebase Auth Signup", "Firebase", StatusForbidden, "Key valid, API not enabled or signup disabled", body)
 			}
-			return cr("Firebase Auth Signup", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Auth Signup", "Firebase", code, body)
 		},
 	}
 }
@@ -1100,6 +1126,7 @@ func check4_21() ServiceCheck {
 func check4_22() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Auth Providers", Category: "Firebase", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key={KEY}' -H 'Content-Type: application/json' -d '{"identifier":"test@test.com","continueUri":"http://localhost"}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=" + key
 			payload := map[string]interface{}{
@@ -1129,7 +1156,7 @@ func check4_22() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Firebase Auth Providers", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase Auth Providers", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Auth Providers", "Firebase", code, body)
 		},
 	}
 }
@@ -1137,6 +1164,7 @@ func check4_22() ServiceCheck {
 func check4_23() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase RTDB", Category: "Firebase", NeedsProject: true,
+		PoC: "curl -s 'https://{PROJECT}-default-rtdb.firebaseio.com/.json?auth={KEY}&shallow=true'",
 		Run: func(key, projectID string) CheckResult {
 			// Try multiple RTDB URL patterns: default, regional, and project-name only.
 			// Collect the most permissive result — don't stop early on 403 since
@@ -1172,6 +1200,7 @@ func check4_23() ServiceCheck {
 func check4_24() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Remote Config", Category: "Firebase", NeedsProject: true,
+		PoC: "curl -s 'https://firebaseremoteconfig.googleapis.com/v1/projects/{PROJECT}/remoteConfig?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://firebaseremoteconfig.googleapis.com/v1/projects/%s/remoteConfig?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -1184,7 +1213,7 @@ func check4_24() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Firebase Remote Config", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase Remote Config", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Remote Config", "Firebase", code, body)
 		},
 	}
 }
@@ -1192,6 +1221,7 @@ func check4_24() ServiceCheck {
 func check4_25() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Cloud Messaging", Category: "Firebase", NeedsProject: true,
+		PoC: `curl -s -X POST 'https://fcm.googleapis.com/v1/projects/{PROJECT}/messages:send?key={KEY}' -H 'Content-Type: application/json' -d '{"validate_only":true,"message":{"topic":"test","notification":{"title":"PoC"}}}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://fcm.googleapis.com/v1/projects/%s/messages:send?key=%s", projectID, key)
 			payload := map[string]interface{}{
@@ -1213,7 +1243,7 @@ func check4_25() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Firebase Cloud Messaging", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase Cloud Messaging", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Cloud Messaging", "Firebase", code, body)
 		},
 	}
 }
@@ -1223,20 +1253,27 @@ func check4_25() ServiceCheck {
 func check4_26() ServiceCheck {
 	return ServiceCheck{
 		Name: "Maps JavaScript API", Category: "Maps", NeedsProject: false,
+		// PoC loads the JS in a browser; server-side `curl` always returns 200
+		// because the key is validated client-side by the SDK.
+		PoC: "# Open in a browser, console will show 'Google Maps JavaScript API error: InvalidKeyMapError' if invalid\nopen 'https://maps.googleapis.com/maps/api/js?key={KEY}&callback=console.log'",
 		Run: func(key, projectID string) CheckResult {
-			url := "https://maps.googleapis.com/maps/api/js?key=" + key
-			code, _, err := doGet(url)
+			// The /maps/api/js endpoint returns HTTP 200 for ANY key value
+			// (validation happens in-browser), so it cannot be probed directly.
+			// Instead, hit the Maps Platform Static API which shares the same
+			// Maps Platform billing umbrella and DOES validate keys server-side.
+			// A 200 here strongly implies the Maps JS API is also usable.
+			url := "https://maps.googleapis.com/maps/api/staticmap?center=0,0&zoom=1&size=1x1&key=" + key
+			code, body, err := doGet(url)
 			if err != nil {
 				return cr("Maps JavaScript API", "Maps", StatusError, err.Error(), nil)
 			}
 			if code == 200 {
-				// Response is JavaScript, not JSON — don't store as RawJSON
-				return cr("Maps JavaScript API", "Maps", StatusVulnerable, "Maps JS loads successfully (billing abuse potential)", nil)
+				return cr("Maps JavaScript API", "Maps", StatusVulnerable, "Maps Platform key accepted (Static Maps probe — Maps JS billing typically shares enablement)", nil)
 			}
-			if code == 401 || code == 403 {
-				return cr("Maps JavaScript API", "Maps", StatusForbidden, "Key valid, API not enabled", nil)
+			if code == 400 || code == 401 || code == 403 {
+				return cr("Maps JavaScript API", "Maps", StatusForbidden, "Key rejected by Maps Platform", body)
 			}
-			return cr("Maps JavaScript API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), nil)
+			return httpError("Maps JavaScript API", "Maps", code, body)
 		},
 	}
 }
@@ -1244,6 +1281,7 @@ func check4_26() ServiceCheck {
 func check4_27() ServiceCheck {
 	return ServiceCheck{
 		Name: "Geocoding API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/geocode/json?address=1600+Amphitheatre+Parkway&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/geocode/json?address=1600+Amphitheatre+Parkway&key=" + key
 			code, body, err := doGet(url)
@@ -1272,7 +1310,7 @@ func check4_27() ServiceCheck {
 				}
 				return cr("Geocoding API", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Geocoding API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Geocoding API", "Maps", code, body)
 		},
 	}
 }
@@ -1280,6 +1318,7 @@ func check4_27() ServiceCheck {
 func check4_28() ServiceCheck {
 	return ServiceCheck{
 		Name: "Places API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=-33.8670522,151.1957362&radius=100&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=-33.8670522,151.1957362&radius=100&key=" + key
 			code, body, err := doGet(url)
@@ -1299,7 +1338,7 @@ func check4_28() ServiceCheck {
 				}
 				return cr("Places API", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Places API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Places API", "Maps", code, body)
 		},
 	}
 }
@@ -1307,6 +1346,7 @@ func check4_28() ServiceCheck {
 func check4_29() ServiceCheck {
 	return ServiceCheck{
 		Name: "Directions API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/directions/json?origin=Toronto&destination=Montreal&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/directions/json?origin=Toronto&destination=Montreal&key=" + key
 			code, body, err := doGet(url)
@@ -1326,7 +1366,7 @@ func check4_29() ServiceCheck {
 				}
 				return cr("Directions API", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Directions API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Directions API", "Maps", code, body)
 		},
 	}
 }
@@ -1334,6 +1374,7 @@ func check4_29() ServiceCheck {
 func check4_30() ServiceCheck {
 	return ServiceCheck{
 		Name: "Distance Matrix API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/distancematrix/json?origins=Toronto&destinations=Montreal&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/distancematrix/json?origins=Toronto&destinations=Montreal&key=" + key
 			code, body, err := doGet(url)
@@ -1353,7 +1394,7 @@ func check4_30() ServiceCheck {
 				}
 				return cr("Distance Matrix API", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Distance Matrix API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Distance Matrix API", "Maps", code, body)
 		},
 	}
 }
@@ -1361,6 +1402,7 @@ func check4_30() ServiceCheck {
 func check4_31() ServiceCheck {
 	return ServiceCheck{
 		Name: "Elevation API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/elevation/json?locations=39.7391536,-104.9847034&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/elevation/json?locations=39.7391536,-104.9847034&key=" + key
 			code, body, err := doGet(url)
@@ -1380,7 +1422,7 @@ func check4_31() ServiceCheck {
 				}
 				return cr("Elevation API", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Elevation API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Elevation API", "Maps", code, body)
 		},
 	}
 }
@@ -1388,6 +1430,7 @@ func check4_31() ServiceCheck {
 func check4_32() ServiceCheck {
 	return ServiceCheck{
 		Name: "Static Maps API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s -o map.png -w '%{http_code}\\n' 'https://maps.googleapis.com/maps/api/staticmap?center=Brooklyn+Bridge&zoom=13&size=600x300&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/staticmap?center=Brooklyn+Bridge&zoom=13&size=10x10&key=" + key
 			code, _, err := doGet(url)
@@ -1401,7 +1444,7 @@ func check4_32() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Static Maps API", "Maps", StatusForbidden, "Key valid, API not enabled", nil)
 			}
-			return cr("Static Maps API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), nil)
+			return httpError("Static Maps API", "Maps", code, nil)
 		},
 	}
 }
@@ -1409,6 +1452,7 @@ func check4_32() ServiceCheck {
 func check4_33() ServiceCheck {
 	return ServiceCheck{
 		Name: "Street View API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s -o sv.jpg -w '%{http_code}\\n' 'https://maps.googleapis.com/maps/api/streetview?size=600x300&location=40.720032,-73.988354&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/streetview?size=10x10&location=40.720032,-73.988354&key=" + key
 			code, _, err := doGet(url)
@@ -1422,7 +1466,7 @@ func check4_33() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Street View API", "Maps", StatusForbidden, "Key valid, API not enabled", nil)
 			}
-			return cr("Street View API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), nil)
+			return httpError("Street View API", "Maps", code, nil)
 		},
 	}
 }
@@ -1430,6 +1474,7 @@ func check4_33() ServiceCheck {
 func check4_34() ServiceCheck {
 	return ServiceCheck{
 		Name: "Time Zone API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/timezone/json?location=39.6034810,-119.6822510&timestamp=1331161200&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/timezone/json?location=39.6034810,-119.6822510&timestamp=1331161200&key=" + key
 			code, body, err := doGet(url)
@@ -1449,7 +1494,7 @@ func check4_34() ServiceCheck {
 				}
 				return cr("Time Zone API", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Time Zone API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Time Zone API", "Maps", code, body)
 		},
 	}
 }
@@ -1457,6 +1502,7 @@ func check4_34() ServiceCheck {
 func check4_35() ServiceCheck {
 	return ServiceCheck{
 		Name: "Roads API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://roads.googleapis.com/v1/snapToRoads?path=-35.27801,149.12958&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://roads.googleapis.com/v1/snapToRoads?path=-35.27801,149.12958&key=" + key
 			code, body, err := doGet(url)
@@ -1469,7 +1515,7 @@ func check4_35() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Roads API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Roads API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Roads API", "Maps", code, body)
 		},
 	}
 }
@@ -1477,6 +1523,7 @@ func check4_35() ServiceCheck {
 func check4_36() ServiceCheck {
 	return ServiceCheck{
 		Name: "Custom Search API", Category: "Search", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/customsearch/v1?q=test&cx=017576662512468239146:omuauf_lfve&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			// Uses a public example search engine (cx). A 200 confirms the key has
 			// Custom Search API + billing enabled, but does NOT mean the key controls
@@ -1492,7 +1539,7 @@ func check4_36() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Custom Search API", "Search", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Custom Search API", "Search", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Custom Search API", "Search", code, body)
 		},
 	}
 }
@@ -1502,6 +1549,7 @@ func check4_36() ServiceCheck {
 func checkPlacesAutocomplete() ServiceCheck {
 	return ServiceCheck{
 		Name: "Places Autocomplete", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/place/autocomplete/json?input=Googleplex&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/place/autocomplete/json?input=Googleplex&key=" + key
 			code, body, err := doGet(url)
@@ -1519,7 +1567,7 @@ func checkPlacesAutocomplete() ServiceCheck {
 				}
 				return cr("Places Autocomplete", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Places Autocomplete", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Places Autocomplete", "Maps", code, body)
 		},
 	}
 }
@@ -1527,6 +1575,7 @@ func checkPlacesAutocomplete() ServiceCheck {
 func checkPlacesDetails() ServiceCheck {
 	return ServiceCheck{
 		Name: "Places Details", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/place/details/json?place_id=ChIJN1t_tDeuEmsRUsoyG83frY4&fields=name,formatted_address,geometry&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://maps.googleapis.com/maps/api/place/details/json?place_id=ChIJN1t_tDeuEmsRUsoyG83frY4&fields=name&key=" + key
 			code, body, err := doGet(url)
@@ -1544,7 +1593,7 @@ func checkPlacesDetails() ServiceCheck {
 				}
 				return cr("Places Details", "Maps", StatusError, "Status: "+resp.Status, body)
 			}
-			return cr("Places Details", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Places Details", "Maps", code, body)
 		},
 	}
 }
@@ -1552,6 +1601,7 @@ func checkPlacesDetails() ServiceCheck {
 func checkMapsTile() ServiceCheck {
 	return ServiceCheck{
 		Name: "Map Tiles API", Category: "Maps", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://tile.googleapis.com/v1/createSession?key={KEY}' -H 'Content-Type: application/json' -d '{"mapType":"roadmap","language":"en-US","region":"US"}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://tile.googleapis.com/v1/createSession?key=" + key
 			payload := map[string]interface{}{
@@ -1569,7 +1619,7 @@ func checkMapsTile() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Map Tiles API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Map Tiles API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Map Tiles API", "Maps", code, body)
 		},
 	}
 }
@@ -1577,6 +1627,7 @@ func checkMapsTile() ServiceCheck {
 func checkEmbedAPI() ServiceCheck {
 	return ServiceCheck{
 		Name: "Maps Embed API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://www.google.com/maps/embed/v1/place?q=NYC&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.google.com/maps/embed/v1/place?q=NYC&key=" + key
 			code, body, err := doGet(url)
@@ -1589,7 +1640,7 @@ func checkEmbedAPI() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Maps Embed API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Maps Embed API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Maps Embed API", "Maps", code, body)
 		},
 	}
 }
@@ -1597,6 +1648,7 @@ func checkEmbedAPI() ServiceCheck {
 func checkSolarAPI() ServiceCheck {
 	return ServiceCheck{
 		Name: "Solar API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=37.4219999&location.longitude=-122.0840575&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=37.4219999&location.longitude=-122.0840575&key=" + key
 			code, body, err := doGet(url)
@@ -1609,7 +1661,7 @@ func checkSolarAPI() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Solar API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Solar API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Solar API", "Maps", code, body)
 		},
 	}
 }
@@ -1617,6 +1669,7 @@ func checkSolarAPI() ServiceCheck {
 func checkAirQuality() ServiceCheck {
 	return ServiceCheck{
 		Name: "Air Quality API", Category: "Maps", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://airquality.googleapis.com/v1/currentConditions:lookup?key={KEY}' -H 'Content-Type: application/json' -d '{"location":{"latitude":37.419734,"longitude":-122.0827784}}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://airquality.googleapis.com/v1/currentConditions:lookup?key=" + key
 			payload := map[string]interface{}{
@@ -1635,7 +1688,7 @@ func checkAirQuality() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 {
 				return cr("Air Quality API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Air Quality API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Air Quality API", "Maps", code, body)
 		},
 	}
 }
@@ -1645,6 +1698,7 @@ func checkAirQuality() ServiceCheck {
 func check4_37() ServiceCheck {
 	return ServiceCheck{
 		Name: "Gemini", Category: "AI", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={KEY}' -H 'Content-Type: application/json' -d '{"contents":[{"parts":[{"text":"Say hello"}]}]}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + key
 			payload := map[string]interface{}{
@@ -1682,7 +1736,7 @@ func check4_37() ServiceCheck {
 			if code == 400 || code == 401 || code == 403 || code == 404 {
 				return cr("Gemini", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Gemini", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Gemini", "AI", code, body)
 		},
 	}
 }
@@ -1690,6 +1744,7 @@ func check4_37() ServiceCheck {
 func check4_38() ServiceCheck {
 	return ServiceCheck{
 		Name: "Gemini Models", Category: "AI", NeedsProject: false,
+		PoC: "curl -s 'https://generativelanguage.googleapis.com/v1beta/models?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + key
 			code, body, err := doGet(url)
@@ -1719,7 +1774,7 @@ func check4_38() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Gemini Models", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Gemini Models", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Gemini Models", "AI", code, body)
 		},
 	}
 }
@@ -1727,6 +1782,7 @@ func check4_38() ServiceCheck {
 func check4_39() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Translation", Category: "AI", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://translation.googleapis.com/language/translate/v2?key={KEY}' -H 'Content-Type: application/json' -d '{"q":"hello","target":"es","format":"text"}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://translation.googleapis.com/language/translate/v2?key=" + key
 			payload := map[string]interface{}{
@@ -1744,7 +1800,7 @@ func check4_39() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Translation", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Translation", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Translation", "AI", code, body)
 		},
 	}
 }
@@ -1752,6 +1808,7 @@ func check4_39() ServiceCheck {
 func check4_40() ServiceCheck {
 	return ServiceCheck{
 		Name: "Language Detection", Category: "AI", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://translation.googleapis.com/language/translate/v2/detect?key={KEY}' -H 'Content-Type: application/json' -d '{"q":"Hello World"}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://translation.googleapis.com/language/translate/v2/detect?key=" + key
 			payload := map[string]interface{}{"q": "Hello World"}
@@ -1765,7 +1822,7 @@ func check4_40() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Language Detection", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Language Detection", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Language Detection", "AI", code, body)
 		},
 	}
 }
@@ -1773,6 +1830,7 @@ func check4_40() ServiceCheck {
 func check4_41() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Vision", Category: "AI", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://vision.googleapis.com/v1/images:annotate?key={KEY}' -H 'Content-Type: application/json' -d '{"requests":[{"image":{"content":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="},"features":[{"type":"LABEL_DETECTION","maxResults":1}]}]}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://vision.googleapis.com/v1/images:annotate?key=" + key
 			// 1x1 white PNG base64
@@ -1798,7 +1856,7 @@ func check4_41() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Vision", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Vision", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Vision", "AI", code, body)
 		},
 	}
 }
@@ -1806,6 +1864,7 @@ func check4_41() ServiceCheck {
 func check4_42() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud NLP", Category: "AI", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://language.googleapis.com/v1/documents:analyzeSentiment?key={KEY}' -H 'Content-Type: application/json' -d '{"document":{"type":"PLAIN_TEXT","content":"Hello World"},"encodingType":"UTF8"}'`,
 		Run: func(key, projectID string) CheckResult {
 			url := "https://language.googleapis.com/v1/documents:analyzeSentiment?key=" + key
 			payload := map[string]interface{}{
@@ -1822,31 +1881,38 @@ func check4_42() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud NLP", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud NLP", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud NLP", "AI", code, body)
 		},
 	}
 }
 
 func check4_43() ServiceCheck {
+	// Send a valid-shape body so 400 → request rejected (not API_KEY_INVALID)
+	// is unambiguous evidence the API accepted our key.
+	const probeBody = `{"config":{"encoding":"LINEAR16","sampleRateHertz":16000,"languageCode":"en-US"},"audio":{"content":"AAAA"}}`
 	return ServiceCheck{
 		Name: "Cloud Speech-to-Text", Category: "AI", NeedsProject: false,
+		PoC: "curl -s -X POST 'https://speech.googleapis.com/v1/speech:recognize?key={KEY}' -H 'Content-Type: application/json' -d '" + probeBody + "'",
 		Run: func(key, projectID string) CheckResult {
-			// POST with empty body: 400 = API enabled (bad request), 403 = API disabled
 			url := "https://speech.googleapis.com/v1/speech:recognize?key=" + key
-			code, body, err := doPost(url, map[string]interface{}{})
+			code, body, err := doPost(url, json.RawMessage(probeBody))
 			if err != nil {
 				return cr("Cloud Speech-to-Text", "AI", StatusError, err.Error(), nil)
-			}
-			if code == 400 {
-				return cr("Cloud Speech-to-Text", "AI", StatusVulnerable, "API is enabled (key accepted, empty-body probe)", body)
 			}
 			if code == 200 {
 				return cr("Cloud Speech-to-Text", "AI", StatusVulnerable, "Speech API access confirmed", body)
 			}
+			// 400 ambiguous: either bad request (API enabled) or API_KEY_INVALID.
+			if code == 400 {
+				if isInvalidKeyResponse(body) {
+					return cr("Cloud Speech-to-Text", "AI", StatusForbidden, "Key rejected for this service", body)
+				}
+				return cr("Cloud Speech-to-Text", "AI", StatusVulnerable, "API is enabled (request rejected, key accepted)", body)
+			}
 			if code == 401 || code == 403 {
 				return cr("Cloud Speech-to-Text", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Speech-to-Text", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Speech-to-Text", "AI", code, body)
 		},
 	}
 }
@@ -1854,6 +1920,7 @@ func check4_43() ServiceCheck {
 func check4_44() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Text-to-Speech", Category: "AI", NeedsProject: false,
+		PoC: "curl -s 'https://texttospeech.googleapis.com/v1/voices?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://texttospeech.googleapis.com/v1/voices?key=" + key
 			code, body, err := doGet(url)
@@ -1871,7 +1938,7 @@ func check4_44() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Text-to-Speech", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Text-to-Speech", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Text-to-Speech", "AI", code, body)
 		},
 	}
 }
@@ -1879,6 +1946,7 @@ func check4_44() ServiceCheck {
 func check4_45() ServiceCheck {
 	return ServiceCheck{
 		Name: "Vertex AI", Category: "AI", NeedsProject: true,
+		PoC: "curl -s 'https://us-central1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/us-central1/models?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/models?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -1905,7 +1973,7 @@ func check4_45() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Vertex AI", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Vertex AI", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Vertex AI", "AI", code, body)
 		},
 	}
 }
@@ -1913,6 +1981,7 @@ func check4_45() ServiceCheck {
 func check4_46() ServiceCheck {
 	return ServiceCheck{
 		Name: "AutoML", Category: "AI", NeedsProject: true,
+		PoC: "curl -s 'https://automl.googleapis.com/v1/projects/{PROJECT}/locations/us-central1/datasets?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://automl.googleapis.com/v1/projects/%s/locations/us-central1/datasets?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -1939,7 +2008,7 @@ func check4_46() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("AutoML", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("AutoML", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("AutoML", "AI", code, body)
 		},
 	}
 }
@@ -1949,6 +2018,7 @@ func check4_46() ServiceCheck {
 func check4_47() ServiceCheck {
 	return ServiceCheck{
 		Name: "YouTube Search", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/youtube/v3/search?part=snippet&q=test&type=video&maxResults=5&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.googleapis.com/youtube/v3/search?part=snippet&q=test&type=video&maxResults=1&key=" + key
 			code, body, err := doGet(url)
@@ -1961,7 +2031,7 @@ func check4_47() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("YouTube Search", "Media", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("YouTube Search", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("YouTube Search", "Media", code, body)
 		},
 	}
 }
@@ -1969,6 +2039,7 @@ func check4_47() ServiceCheck {
 func check4_48() ServiceCheck {
 	return ServiceCheck{
 		Name: "YouTube Channels", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true&key=" + key
 			code, body, err := doGet(url)
@@ -1981,7 +2052,7 @@ func check4_48() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("YouTube Channels", "Media", StatusForbidden, "Key valid, requires OAuth", body)
 			}
-			return cr("YouTube Channels", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("YouTube Channels", "Media", code, body)
 		},
 	}
 }
@@ -1989,6 +2060,7 @@ func check4_48() ServiceCheck {
 func check4_49() ServiceCheck {
 	return ServiceCheck{
 		Name: "YouTube Analytics", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://youtubeanalytics.googleapis.com/v2/reports?ids=channel==MINE&metrics=views&startDate=2024-01-01&endDate=2024-01-02&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://youtubeanalytics.googleapis.com/v2/reports?ids=channel==MINE&metrics=views&startDate=2024-01-01&endDate=2024-01-02&key=" + key
 			code, body, err := doGet(url)
@@ -2001,7 +2073,7 @@ func check4_49() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("YouTube Analytics", "Media", StatusForbidden, "Key valid, requires OAuth", body)
 			}
-			return cr("YouTube Analytics", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("YouTube Analytics", "Media", code, body)
 		},
 	}
 }
@@ -2009,6 +2081,7 @@ func check4_49() ServiceCheck {
 func check4_50() ServiceCheck {
 	return ServiceCheck{
 		Name: "Google Books", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/books/v1/volumes?q=golang&maxResults=5&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.googleapis.com/books/v1/volumes?q=golang&maxResults=1&key=" + key
 			code, body, err := doGet(url)
@@ -2021,7 +2094,7 @@ func check4_50() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Google Books", "Media", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Google Books", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Google Books", "Media", code, body)
 		},
 	}
 }
@@ -2029,6 +2102,7 @@ func check4_50() ServiceCheck {
 func check4_51() ServiceCheck {
 	return ServiceCheck{
 		Name: "Google Fonts", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/webfonts/v1/webfonts?key={KEY}&sort=popularity'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.googleapis.com/webfonts/v1/webfonts?key=" + key + "&sort=popularity"
 			code, body, err := doGet(url)
@@ -2041,7 +2115,7 @@ func check4_51() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Google Fonts", "Media", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Google Fonts", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Google Fonts", "Media", code, body)
 		},
 	}
 }
@@ -2049,6 +2123,7 @@ func check4_51() ServiceCheck {
 func check4_52() ServiceCheck {
 	return ServiceCheck{
 		Name: "Google Calendar", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/calendar/v3/users/me/calendarList?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.googleapis.com/calendar/v3/users/me/calendarList?key=" + key
 			code, body, err := doGet(url)
@@ -2061,7 +2136,7 @@ func check4_52() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Google Calendar", "Media", StatusForbidden, "Key valid, requires OAuth", body)
 			}
-			return cr("Google Calendar", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Google Calendar", "Media", code, body)
 		},
 	}
 }
@@ -2069,6 +2144,7 @@ func check4_52() ServiceCheck {
 func check4_53() ServiceCheck {
 	return ServiceCheck{
 		Name: "Google Drive", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://www.googleapis.com/drive/v3/files?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://www.googleapis.com/drive/v3/files?key=" + key
 			code, body, err := doGet(url)
@@ -2081,7 +2157,7 @@ func check4_53() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Google Drive", "Media", StatusForbidden, "Key valid, requires OAuth", body)
 			}
-			return cr("Google Drive", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Google Drive", "Media", code, body)
 		},
 	}
 }
@@ -2089,6 +2165,7 @@ func check4_53() ServiceCheck {
 func check4_54() ServiceCheck {
 	return ServiceCheck{
 		Name: "Google Sheets", Category: "Media", NeedsProject: false,
+		PoC: "curl -s 'https://sheets.googleapis.com/v4/spreadsheets?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://sheets.googleapis.com/v4/spreadsheets?key=" + key
 			code, body, err := doGet(url)
@@ -2101,7 +2178,7 @@ func check4_54() ServiceCheck {
 			if code == 401 || code == 403 || code == 404 {
 				return cr("Google Sheets", "Media", StatusForbidden, "Key valid, requires OAuth", body)
 			}
-			return cr("Google Sheets", "Media", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Google Sheets", "Media", code, body)
 		},
 	}
 }
@@ -2111,6 +2188,7 @@ func check4_54() ServiceCheck {
 func check4_55() ServiceCheck {
 	return ServiceCheck{
 		Name: "People API", Category: "Identity", NeedsProject: false,
+		PoC: "curl -s 'https://people.googleapis.com/v1/people:listDirectoryPeople?sources=DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE&readMask=names,emailAddresses,phoneNumbers&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := "https://people.googleapis.com/v1/people:listDirectoryPeople?sources=DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE&readMask=names&key=" + key
 			code, body, err := doGet(url)
@@ -2123,7 +2201,7 @@ func check4_55() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("People API", "Identity", StatusForbidden, "Key valid, requires OAuth", body)
 			}
-			return cr("People API", "Identity", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("People API", "Identity", code, body)
 		},
 	}
 }
@@ -2131,6 +2209,7 @@ func check4_55() ServiceCheck {
 func check4_56() ServiceCheck {
 	return ServiceCheck{
 		Name: "reCAPTCHA Enterprise", Category: "Identity", NeedsProject: true,
+		PoC: "curl -s 'https://recaptchaenterprise.googleapis.com/v1/projects/{PROJECT}/keys?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://recaptchaenterprise.googleapis.com/v1/projects/%s/keys?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -2150,7 +2229,7 @@ func check4_56() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("reCAPTCHA Enterprise", "Identity", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("reCAPTCHA Enterprise", "Identity", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("reCAPTCHA Enterprise", "Identity", code, body)
 		},
 	}
 }
@@ -2158,6 +2237,7 @@ func check4_56() ServiceCheck {
 func check4_57() ServiceCheck {
 	return ServiceCheck{
 		Name: "Identity-Aware Proxy", Category: "Identity", NeedsProject: true,
+		PoC: "curl -s 'https://iap.googleapis.com/v1/projects/{PROJECT}/iap_web?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://iap.googleapis.com/v1/projects/%s/iap_web?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -2170,7 +2250,7 @@ func check4_57() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Identity-Aware Proxy", "Identity", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Identity-Aware Proxy", "Identity", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Identity-Aware Proxy", "Identity", code, body)
 		},
 	}
 }
@@ -2178,6 +2258,7 @@ func check4_57() ServiceCheck {
 func check4_58() ServiceCheck {
 	return ServiceCheck{
 		Name: "Service Usage", Category: "Identity", NeedsProject: true,
+		PoC: "curl -s 'https://serviceusage.googleapis.com/v1/projects/{PROJECT}/services?filter=state:ENABLED&key={KEY}&pageSize=200'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://serviceusage.googleapis.com/v1/projects/%s/services?filter=state:ENABLED&key=%s&pageSize=20", projectID, key)
 			code, body, err := doGet(url)
@@ -2206,7 +2287,7 @@ func check4_58() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Service Usage", "Identity", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Service Usage", "Identity", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Service Usage", "Identity", code, body)
 		},
 	}
 }
@@ -2214,6 +2295,7 @@ func check4_58() ServiceCheck {
 func check4_59() ServiceCheck {
 	return ServiceCheck{
 		Name: "IAM Service Accounts", Category: "Identity", NeedsProject: true,
+		PoC: "curl -s 'https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			url := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts?key=%s", projectID, key)
 			code, body, err := doGet(url)
@@ -2240,7 +2322,7 @@ func check4_59() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("IAM Service Accounts", "Identity", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("IAM Service Accounts", "Identity", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("IAM Service Accounts", "Identity", code, body)
 		},
 	}
 }
@@ -2250,6 +2332,7 @@ func check4_59() ServiceCheck {
 func checkMemorystore() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Memorystore", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://redis.googleapis.com/v1/projects/{PROJECT}/locations/-/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://redis.googleapis.com/v1/projects/%s/locations/-/instances?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2276,7 +2359,7 @@ func checkMemorystore() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Memorystore", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Memorystore", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Memorystore", "GCP", code, body)
 		},
 	}
 }
@@ -2284,6 +2367,7 @@ func checkMemorystore() ServiceCheck {
 func checkFilestore() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Filestore", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://file.googleapis.com/v1/projects/{PROJECT}/locations/-/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://file.googleapis.com/v1/projects/%s/locations/-/instances?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2310,7 +2394,7 @@ func checkFilestore() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Filestore", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Filestore", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Filestore", "GCP", code, body)
 		},
 	}
 }
@@ -2318,6 +2402,7 @@ func checkFilestore() ServiceCheck {
 func checkVPCNetworks() ServiceCheck {
 	return ServiceCheck{
 		Name: "VPC Networks", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://www.googleapis.com/compute/v1/projects/{PROJECT}/global/networks?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://www.googleapis.com/compute/v1/projects/%s/global/networks?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2344,7 +2429,7 @@ func checkVPCNetworks() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("VPC Networks", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("VPC Networks", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("VPC Networks", "GCP", code, body)
 		},
 	}
 }
@@ -2352,6 +2437,7 @@ func checkVPCNetworks() ServiceCheck {
 func checkCloudEndpoints() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Endpoints", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://servicemanagement.googleapis.com/v1/services?producerProjectId={PROJECT}&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://servicemanagement.googleapis.com/v1/services?producerProjectId=%s&key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2378,7 +2464,7 @@ func checkCloudEndpoints() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Endpoints", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Endpoints", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Endpoints", "GCP", code, body)
 		},
 	}
 }
@@ -2386,6 +2472,7 @@ func checkCloudEndpoints() ServiceCheck {
 func checkFirebaseExtensions() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Extensions", Category: "Firebase", NeedsProject: true,
+		PoC: "curl -s 'https://firebaseextensions.googleapis.com/v1beta/projects/{PROJECT}/instances?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://firebaseextensions.googleapis.com/v1beta/projects/%s/instances?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2405,7 +2492,7 @@ func checkFirebaseExtensions() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Firebase Extensions", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase Extensions", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Extensions", "Firebase", code, body)
 		},
 	}
 }
@@ -2413,6 +2500,7 @@ func checkFirebaseExtensions() ServiceCheck {
 func checkFirebaseTestLab() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Test Lab", Category: "Firebase", NeedsProject: false,
+		PoC: "curl -s 'https://testing.googleapis.com/v1/testEnvironmentCatalog/ANDROID?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://testing.googleapis.com/v1/testEnvironmentCatalog/ANDROID?key=" + key
 			code, body, err := doGet(u)
@@ -2433,7 +2521,7 @@ func checkFirebaseTestLab() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Firebase Test Lab", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase Test Lab", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Test Lab", "Firebase", code, body)
 		},
 	}
 }
@@ -2441,6 +2529,7 @@ func checkFirebaseTestLab() ServiceCheck {
 func checkFirebaseHosting() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase Hosting", Category: "Firebase", NeedsProject: true,
+		PoC: "curl -s 'https://firebasehosting.googleapis.com/v1beta1/projects/{PROJECT}/sites?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://firebasehosting.googleapis.com/v1beta1/projects/%s/sites?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2472,7 +2561,7 @@ func checkFirebaseHosting() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Firebase Hosting", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase Hosting", "Firebase", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase Hosting", "Firebase", code, body)
 		},
 	}
 }
@@ -2480,6 +2569,7 @@ func checkFirebaseHosting() ServiceCheck {
 func checkCloudWorkflows() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Workflows", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://workflows.googleapis.com/v1/projects/{PROJECT}/locations/-/workflows?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://workflows.googleapis.com/v1/projects/%s/locations/-/workflows?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2506,7 +2596,7 @@ func checkCloudWorkflows() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Workflows", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Workflows", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Workflows", "GCP", code, body)
 		},
 	}
 }
@@ -2516,6 +2606,7 @@ func checkCloudWorkflows() ServiceCheck {
 func checkAddressValidation() ServiceCheck {
 	return ServiceCheck{
 		Name: "Address Validation", Category: "Maps", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://addressvalidation.googleapis.com/v1:validateAddress?key={KEY}' -H 'Content-Type: application/json' -d '{"address":{"addressLines":["1600 Amphitheatre Parkway, Mountain View, CA"]}}'`,
 		Run: func(key, projectID string) CheckResult {
 			u := "https://addressvalidation.googleapis.com/v1:validateAddress?key=" + key
 			payload := map[string]interface{}{
@@ -2533,7 +2624,7 @@ func checkAddressValidation() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Address Validation", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Address Validation", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Address Validation", "Maps", code, body)
 		},
 	}
 }
@@ -2541,6 +2632,7 @@ func checkAddressValidation() ServiceCheck {
 func checkRoutesAPI() ServiceCheck {
 	return ServiceCheck{
 		Name: "Routes API", Category: "Maps", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://routes.googleapis.com/directions/v2:computeRoutes?key={KEY}' -H 'Content-Type: application/json' -H 'X-Goog-FieldMask: routes.duration,routes.distanceMeters' -d '{"origin":{"location":{"latLng":{"latitude":37.4191,"longitude":-122.0574}}},"destination":{"location":{"latLng":{"latitude":37.418,"longitude":-122.079}}}}'`,
 		Run: func(key, projectID string) CheckResult {
 			u := "https://routes.googleapis.com/directions/v2:computeRoutes?key=" + key
 			payload := map[string]interface{}{
@@ -2557,7 +2649,7 @@ func checkRoutesAPI() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Routes API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Routes API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Routes API", "Maps", code, body)
 		},
 	}
 }
@@ -2565,6 +2657,7 @@ func checkRoutesAPI() ServiceCheck {
 func checkRouteMatrix() ServiceCheck {
 	return ServiceCheck{
 		Name: "Route Matrix API", Category: "Maps", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix?key={KEY}' -H 'Content-Type: application/json' -H 'X-Goog-FieldMask: duration,distanceMeters' -d '{"origins":[{"waypoint":{"location":{"latLng":{"latitude":37.4191,"longitude":-122.0574}}}}],"destinations":[{"waypoint":{"location":{"latLng":{"latitude":37.418,"longitude":-122.079}}}}]}'`,
 		Run: func(key, projectID string) CheckResult {
 			u := "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix?key=" + key
 			payload := map[string]interface{}{
@@ -2581,7 +2674,7 @@ func checkRouteMatrix() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Route Matrix API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Route Matrix API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Route Matrix API", "Maps", code, body)
 		},
 	}
 }
@@ -2589,6 +2682,7 @@ func checkRouteMatrix() ServiceCheck {
 func checkAerialView() ServiceCheck {
 	return ServiceCheck{
 		Name: "Aerial View", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://aerialview.googleapis.com/v1/videos:lookupVideo?address=1600+Amphitheatre+Parkway,+Mountain+View,+CA&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://aerialview.googleapis.com/v1/videos:lookupVideo?address=1600+Amphitheatre+Parkway,+Mountain+View,+CA&key=" + key
 			code, body, err := doGet(u)
@@ -2605,7 +2699,7 @@ func checkAerialView() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Aerial View", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Aerial View", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Aerial View", "Maps", code, body)
 		},
 	}
 }
@@ -2613,6 +2707,7 @@ func checkAerialView() ServiceCheck {
 func checkPlacesNew() ServiceCheck {
 	return ServiceCheck{
 		Name: "Places API (New)", Category: "Maps", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://places.googleapis.com/v1/places:searchNearby?key={KEY}' -H 'Content-Type: application/json' -H 'X-Goog-FieldMask: places.displayName,places.formattedAddress' -d '{"locationRestriction":{"circle":{"center":{"latitude":37.4191,"longitude":-122.0574},"radius":100.0}}}'`,
 		Run: func(key, projectID string) CheckResult {
 			u := "https://places.googleapis.com/v1/places:searchNearby?key=" + key
 			payload := map[string]interface{}{
@@ -2642,7 +2737,7 @@ func checkPlacesNew() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Places API (New)", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Places API (New)", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Places API (New)", "Maps", code, body)
 		},
 	}
 }
@@ -2650,6 +2745,7 @@ func checkPlacesNew() ServiceCheck {
 func checkPollenAPI() ServiceCheck {
 	return ServiceCheck{
 		Name: "Pollen API", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://pollen.googleapis.com/v1/forecast:lookup?location.latitude=37.4&location.longitude=-122.0&days=1&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://pollen.googleapis.com/v1/forecast:lookup?location.latitude=37.4&location.longitude=-122.0&days=1&key=" + key
 			code, body, err := doGet(u)
@@ -2662,7 +2758,7 @@ func checkPollenAPI() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Pollen API", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Pollen API", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Pollen API", "Maps", code, body)
 		},
 	}
 }
@@ -2672,6 +2768,7 @@ func checkPollenAPI() ServiceCheck {
 func checkGeminiTunedModels() ServiceCheck {
 	return ServiceCheck{
 		Name: "Gemini Tuned Models", Category: "AI", NeedsProject: false,
+		PoC: "curl -s 'https://generativelanguage.googleapis.com/v1beta/tunedModels?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://generativelanguage.googleapis.com/v1beta/tunedModels?key=" + key
 			code, body, err := doGet(u)
@@ -2691,7 +2788,7 @@ func checkGeminiTunedModels() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Gemini Tuned Models", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Gemini Tuned Models", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Gemini Tuned Models", "AI", code, body)
 		},
 	}
 }
@@ -2699,6 +2796,7 @@ func checkGeminiTunedModels() ServiceCheck {
 func checkVertexAIDatasets() ServiceCheck {
 	return ServiceCheck{
 		Name: "Vertex AI Datasets", Category: "AI", NeedsProject: true,
+		PoC: "curl -s 'https://us-central1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/us-central1/datasets?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/datasets?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2725,7 +2823,7 @@ func checkVertexAIDatasets() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Vertex AI Datasets", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Vertex AI Datasets", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Vertex AI Datasets", "AI", code, body)
 		},
 	}
 }
@@ -2733,6 +2831,7 @@ func checkVertexAIDatasets() ServiceCheck {
 func checkGeminiFiles() ServiceCheck {
 	return ServiceCheck{
 		Name: "Gemini Files API", Category: "AI", NeedsProject: false,
+		PoC: "curl -s 'https://generativelanguage.googleapis.com/v1beta/files?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://generativelanguage.googleapis.com/v1beta/files?key=" + key
 			code, body, err := doGet(u)
@@ -2755,31 +2854,35 @@ func checkGeminiFiles() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Gemini Files API", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Gemini Files API", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Gemini Files API", "AI", code, body)
 		},
 	}
 }
 
 func checkVideoIntelligence() ServiceCheck {
+	const probeBody = `{"inputUri":"gs://cloud-samples-data/video/cat.mp4","features":["LABEL_DETECTION"]}`
 	return ServiceCheck{
 		Name: "Video Intelligence", Category: "AI", NeedsProject: false,
+		PoC: "curl -s -X POST 'https://videointelligence.googleapis.com/v1/videos:annotate?key={KEY}' -H 'Content-Type: application/json' -d '" + probeBody + "'",
 		Run: func(key, projectID string) CheckResult {
-			// POST with empty body: 400 = API enabled (bad request), 403 = API disabled
 			u := "https://videointelligence.googleapis.com/v1/videos:annotate?key=" + key
-			code, body, err := doPost(u, map[string]interface{}{})
+			code, body, err := doPost(u, json.RawMessage(probeBody))
 			if err != nil {
 				return cr("Video Intelligence", "AI", StatusError, err.Error(), nil)
-			}
-			if code == 400 {
-				return cr("Video Intelligence", "AI", StatusVulnerable, "API is enabled (key accepted, empty-body probe)", body)
 			}
 			if code == 200 {
 				return cr("Video Intelligence", "AI", StatusVulnerable, "Video Intelligence API access confirmed", body)
 			}
+			if code == 400 {
+				if isInvalidKeyResponse(body) {
+					return cr("Video Intelligence", "AI", StatusForbidden, "Key rejected for this service", body)
+				}
+				return cr("Video Intelligence", "AI", StatusVulnerable, "API is enabled (request rejected, key accepted)", body)
+			}
 			if code == 401 || code == 403 {
 				return cr("Video Intelligence", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Video Intelligence", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Video Intelligence", "AI", code, body)
 		},
 	}
 }
@@ -2787,6 +2890,7 @@ func checkVideoIntelligence() ServiceCheck {
 func checkDocumentAI() ServiceCheck {
 	return ServiceCheck{
 		Name: "Document AI", Category: "AI", NeedsProject: true,
+		PoC: "curl -s 'https://us-documentai.googleapis.com/v1/projects/{PROJECT}/locations/us/processors?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://us-documentai.googleapis.com/v1/projects/%s/locations/us/processors?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2806,7 +2910,7 @@ func checkDocumentAI() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Document AI", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Document AI", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Document AI", "AI", code, body)
 		},
 	}
 }
@@ -2816,6 +2920,7 @@ func checkDocumentAI() ServiceCheck {
 func checkFirebaseAppCheck() ServiceCheck {
 	return ServiceCheck{
 		Name: "Firebase App Check", Category: "Identity", NeedsProject: true,
+		PoC: "curl -s 'https://firebaseappcheck.googleapis.com/v1/projects/{PROJECT}/apps?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://firebaseappcheck.googleapis.com/v1/projects/%s/apps?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2835,7 +2940,7 @@ func checkFirebaseAppCheck() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Firebase App Check", "Identity", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Firebase App Check", "Identity", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Firebase App Check", "Identity", code, body)
 		},
 	}
 }
@@ -2843,6 +2948,7 @@ func checkFirebaseAppCheck() ServiceCheck {
 func checkSourceRepos() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Source Repositories", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://sourcerepo.googleapis.com/v1/projects/{PROJECT}/repos?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://sourcerepo.googleapis.com/v1/projects/%s/repos?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2862,7 +2968,7 @@ func checkSourceRepos() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Source Repositories", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Source Repositories", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Source Repositories", "GCP", code, body)
 		},
 	}
 }
@@ -2870,6 +2976,7 @@ func checkSourceRepos() ServiceCheck {
 func checkCloudKMS() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud KMS", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://cloudkms.googleapis.com/v1/projects/{PROJECT}/locations/-/keyRings?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://cloudkms.googleapis.com/v1/projects/%s/locations/-/keyRings?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2889,7 +2996,7 @@ func checkCloudKMS() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud KMS", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud KMS", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud KMS", "GCP", code, body)
 		},
 	}
 }
@@ -2897,6 +3004,7 @@ func checkCloudKMS() ServiceCheck {
 func checkDataflow() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Dataflow", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://dataflow.googleapis.com/v1b3/projects/{PROJECT}/jobs?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://dataflow.googleapis.com/v1b3/projects/%s/jobs?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -2916,7 +3024,7 @@ func checkDataflow() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Dataflow", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Dataflow", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Dataflow", "GCP", code, body)
 		},
 	}
 }
@@ -2924,6 +3032,7 @@ func checkDataflow() ServiceCheck {
 func checkFindPlace() ServiceCheck {
 	return ServiceCheck{
 		Name: "Find Place", Category: "Maps", NeedsProject: false,
+		PoC: "curl -s 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=Museum+of+Contemporary+Art+Australia&inputtype=textquery&key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=Museum+of+Contemporary+Art+Australia&inputtype=textquery&key=" + key
 			code, body, err := doGet(u)
@@ -2950,7 +3059,7 @@ func checkFindPlace() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Find Place", "Maps", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Find Place", "Maps", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Find Place", "Maps", code, body)
 		},
 	}
 }
@@ -2958,6 +3067,7 @@ func checkFindPlace() ServiceCheck {
 func checkGeminiEmbeddings() ServiceCheck {
 	return ServiceCheck{
 		Name: "Gemini Embeddings", Category: "AI", NeedsProject: false,
+		PoC: `curl -s -X POST 'https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={KEY}' -H 'Content-Type: application/json' -d '{"content":{"parts":[{"text":"Hello"}]}}'`,
 		Run: func(key, projectID string) CheckResult {
 			u := "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=" + key
 			payload := map[string]interface{}{
@@ -2984,7 +3094,7 @@ func checkGeminiEmbeddings() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Gemini Embeddings", "AI", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Gemini Embeddings", "AI", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Gemini Embeddings", "AI", code, body)
 		},
 	}
 }
@@ -2992,6 +3102,7 @@ func checkGeminiEmbeddings() ServiceCheck {
 func checkCloudComposer() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Composer", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://composer.googleapis.com/v1/projects/{PROJECT}/locations/-/environments?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://composer.googleapis.com/v1/projects/%s/locations/-/environments?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -3018,7 +3129,7 @@ func checkCloudComposer() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Composer", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Composer", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Composer", "GCP", code, body)
 		},
 	}
 }
@@ -3026,6 +3137,7 @@ func checkCloudComposer() ServiceCheck {
 func checkAlloyDB() ServiceCheck {
 	return ServiceCheck{
 		Name: "AlloyDB", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://alloydb.googleapis.com/v1/projects/{PROJECT}/locations/-/clusters?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://alloydb.googleapis.com/v1/projects/%s/locations/-/clusters?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -3052,7 +3164,7 @@ func checkAlloyDB() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("AlloyDB", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("AlloyDB", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("AlloyDB", "GCP", code, body)
 		},
 	}
 }
@@ -3060,6 +3172,7 @@ func checkAlloyDB() ServiceCheck {
 func checkBatchAPI() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Batch", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://batch.googleapis.com/v1/projects/{PROJECT}/locations/-/jobs?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://batch.googleapis.com/v1/projects/%s/locations/-/jobs?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -3079,7 +3192,7 @@ func checkBatchAPI() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Batch", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Batch", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Batch", "GCP", code, body)
 		},
 	}
 }
@@ -3087,6 +3200,7 @@ func checkBatchAPI() ServiceCheck {
 func checkBillingAccounts() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Billing", Category: "GCP", NeedsProject: false,
+		PoC: "curl -s 'https://cloudbilling.googleapis.com/v1/billingAccounts?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := "https://cloudbilling.googleapis.com/v1/billingAccounts?key=" + key
 			code, body, err := doGet(u)
@@ -3119,7 +3233,7 @@ func checkBillingAccounts() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Billing", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Billing", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Billing", "GCP", code, body)
 		},
 	}
 }
@@ -3127,6 +3241,7 @@ func checkBillingAccounts() ServiceCheck {
 func checkCloudRetail() ServiceCheck {
 	return ServiceCheck{
 		Name: "Cloud Retail", Category: "GCP", NeedsProject: true,
+		PoC: "curl -s 'https://retail.googleapis.com/v2/projects/{PROJECT}/locations/global/catalogs?key={KEY}'",
 		Run: func(key, projectID string) CheckResult {
 			u := fmt.Sprintf("https://retail.googleapis.com/v2/projects/%s/locations/global/catalogs?key=%s", projectID, key)
 			code, body, err := doGet(u)
@@ -3146,7 +3261,7 @@ func checkCloudRetail() ServiceCheck {
 			if code == 401 || code == 403 {
 				return cr("Cloud Retail", "GCP", StatusForbidden, "Key valid, API not enabled", body)
 			}
-			return cr("Cloud Retail", "GCP", StatusError, fmt.Sprintf("HTTP %d", code), body)
+			return httpError("Cloud Retail", "GCP", code, body)
 		},
 	}
 }
@@ -3167,6 +3282,53 @@ func cr(service, category string, status Status, detail string, rawBody []byte) 
 func shortName(full string) string {
 	parts := strings.Split(full, "/")
 	return parts[len(parts)-1]
+}
+
+// isInvalidKeyResponse returns true when a Google API response body indicates
+// the API key itself was rejected (vs. the request payload being malformed).
+// Google returns HTTP 400 with reason=API_KEY_INVALID when a key cannot access
+// a service — this must NOT be treated as evidence the API is enabled.
+func isInvalidKeyResponse(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	s := string(body)
+	for _, marker := range []string{
+		"API_KEY_INVALID",
+		"API_KEY_SERVICE_BLOCKED",
+		"API_KEY_HTTP_REFERRER_BLOCKED",
+		"API_KEY_IP_ADDRESS_BLOCKED",
+		"API_KEY_ANDROID_APP_BLOCKED",
+		"API_KEY_IOS_APP_BLOCKED",
+		"API_KEY_EXPIRED",
+		"API key not valid",
+		"The provided API key is invalid",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// fillPoC substitutes {KEY} and {PROJECT} placeholders in a PoC template.
+// The raw (un-encoded) key is intentionally used — copy-pasted curl commands
+// must contain the literal key the user already has on disk.
+func fillPoC(template, key, projectID string) string {
+	out := strings.ReplaceAll(template, "{KEY}", key)
+	out = strings.ReplaceAll(out, "{PROJECT}", projectID)
+	return out
+}
+
+// httpError classifies an HTTP response that didn't match any explicit branch.
+// Google returns HTTP 400 with reason=API_KEY_INVALID for many APIs when the
+// key is not authorized for the service — those are demoted to Forbidden so
+// they don't clutter the output as "errors".
+func httpError(service, category string, code int, body []byte) CheckResult {
+	if code == 400 && isInvalidKeyResponse(body) {
+		return cr(service, category, StatusForbidden, "Key rejected for this service", body)
+	}
+	return cr(service, category, StatusError, fmt.Sprintf("HTTP %d", code), body)
 }
 
 // ─── Output ──────────────────────────────────────────────────────────────────
@@ -3215,6 +3377,7 @@ func printSummary(kr KeyResult) {
 
 	vulnCount := 0
 	enabledCount := 0
+	gatewayBlock := ""
 
 	for _, c := range kr.Results {
 		if c.Status == StatusVulnerable {
@@ -3226,21 +3389,45 @@ func printSummary(kr KeyResult) {
 				fmt.Sscanf(c.Detail[:idx], "%d", &enabledCount)
 			}
 		}
+		if c.Service == "Gateway" {
+			if c.Status == StatusInvalid {
+				gatewayBlock = "STATUS   : INVALID — " + c.Detail
+			} else if c.Status == StatusError {
+				gatewayBlock = "STATUS   : ERROR — " + c.Detail
+			}
+		}
 	}
 
 	fmt.Println()
 	fmt.Println("══════════════════════════════════════════════════")
 	fmt.Printf("KEY      : %s\n", maskedKey)
+	if gatewayBlock != "" {
+		fmt.Println(gatewayBlock)
+		fmt.Println("══════════════════════════════════════════════════")
+		return
+	}
 	fmt.Printf("PROJECT  : %s\n", kr.ProjectID)
 	if enabledCount > 0 {
 		fmt.Printf("ENABLED APIs (from Service Usage): %d detected\n", enabledCount)
 	}
 	fmt.Printf("VULNERABLE SERVICES: %d\n", vulnCount)
-	fmt.Println()
 
-	for _, c := range kr.Results {
-		if c.Status == StatusVulnerable {
-			fmt.Printf("%-8s / %-25s | %s\n", c.Category, c.Service, c.Detail)
+	if vulnCount > 0 {
+		fmt.Println()
+		fmt.Println("─── FINDINGS ─────────────────────────────────────")
+		for _, c := range kr.Results {
+			if c.Status != StatusVulnerable {
+				continue
+			}
+			colorVuln.Printf("[%s / %s]\n", c.Category, c.Service)
+			fmt.Printf("  detail : %s\n", c.Detail)
+			if c.PoC != "" {
+				fmt.Println("  PoC    :")
+				for _, line := range strings.Split(c.PoC, "\n") {
+					fmt.Printf("    %s\n", line)
+				}
+			}
+			fmt.Println()
 		}
 	}
 
@@ -3261,9 +3448,11 @@ func validateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 	gw := gatewayCheck(key, fallbackProject)
 	switch gw.status {
 	case "invalid":
-		printMu.Lock()
-		colorInv.Printf("[INVALID]    ---                               | Key rejected by Google (HTTP 400)\n")
-		printMu.Unlock()
+		if silent == 0 {
+			printMu.Lock()
+			colorInv.Printf("[INVALID]    ---                               | Key rejected by Google (HTTP 400)\n")
+			printMu.Unlock()
+		}
 		kr.Results = append(kr.Results, CheckResult{
 			Service: "Gateway", Category: "---", Status: StatusInvalid, StatusS: "invalid",
 			Detail: "Key rejected by Google (HTTP 400)",
@@ -3271,9 +3460,11 @@ func validateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 		return kr
 	case "error":
 		errDetail := "Gateway check failed: " + gw.errMsg
-		printMu.Lock()
-		colorErr.Printf("[ERROR]      ---                               | %s\n", errDetail)
-		printMu.Unlock()
+		if silent == 0 {
+			printMu.Lock()
+			colorErr.Printf("[ERROR]      ---                               | %s\n", errDetail)
+			printMu.Unlock()
+		}
 		kr.Results = append(kr.Results, CheckResult{
 			Service: "Gateway", Category: "---", Status: StatusError, StatusS: "error",
 			Detail: errDetail,
@@ -3304,6 +3495,9 @@ func validateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 		go func(idx int, c ServiceCheck) {
 			defer wg.Done()
 			results[idx] = c.Run(escKey, kr.ProjectID)
+			if results[idx].Status == StatusVulnerable && c.PoC != "" {
+				results[idx].PoC = fillPoC(c.PoC, key, kr.ProjectID)
+			}
 		}(i, chk)
 	}
 	wg.Wait()
@@ -3313,7 +3507,6 @@ func validateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 		kr.Results = append(kr.Results, r)
 	}
 
-	printSummary(kr)
 	return kr
 }
 
@@ -3452,16 +3645,25 @@ func main() {
 
 	var outputMu sync.Mutex
 
+	// With multiple keys, per-check live output from parallel goroutines
+	// interleaves into nonsense. Suppress it and rely on the grouped
+	// summaries at the end. Single-key runs keep their live trace.
+	if len(keys) > 1 && silent == 0 {
+		silent = 1
+	}
+
 	sem := make(chan struct{}, *flagWorkers)
 	var wg sync.WaitGroup
+	allResults := make([]KeyResult, len(keys))
 
-	for _, key := range keys {
+	for i, key := range keys {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(k string) {
+		go func(idx int, k string) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			kr := validateKey(k, *flagProject, checks)
+			allResults[idx] = kr
 
 			if jsonlFile != nil {
 				data, err := json.Marshal(kr)
@@ -3474,23 +3676,32 @@ func main() {
 			}
 
 			if outputFile != nil {
-				var vulns []string
+				var vulnResults []CheckResult
 				for _, r := range kr.Results {
 					if r.Status == StatusVulnerable {
-						vulns = append(vulns, r.Category+"/"+r.Service+" — "+r.Detail)
+						vulnResults = append(vulnResults, r)
 					}
 				}
-				if len(vulns) > 0 {
+				if len(vulnResults) > 0 {
 					outputMu.Lock()
 					fmt.Fprintf(outputFile, "%s\n", k)
-					for _, v := range vulns {
-						fmt.Fprintf(outputFile, "  %s\n", v)
+					for _, r := range vulnResults {
+						fmt.Fprintf(outputFile, "  %s/%s — %s\n", r.Category, r.Service, r.Detail)
+						if r.PoC != "" {
+							fmt.Fprintf(outputFile, "    PoC: %s\n", r.PoC)
+						}
 					}
 					fmt.Fprintln(outputFile)
 					outputMu.Unlock()
 				}
 			}
-		}(key)
+		}(i, key)
 	}
 	wg.Wait()
+
+	// Print summaries together, in input order, so multi-key runs are
+	// readable end-to-end instead of interleaved.
+	for _, kr := range allResults {
+		printSummary(kr)
+	}
 }
