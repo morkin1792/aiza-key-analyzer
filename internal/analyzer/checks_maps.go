@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 // allowed to abuse it?
 //
 //   - 200 with junk referer → key is NOT referer-restricted (unrestricted, or
-//     IP-restricted with our scanner IP allowed which is very unlikely).
+//     IP-restricted with our analyzer IP allowed which is very unlikely).
 //     Treat every Maps "200" elsewhere as a confirmed abuse vector.
 //   - 403 API_KEY_HTTP_REFERRER_BLOCKED → key IS referer-restricted, our
 //     referer is not on the allow list. Maps abuse is contained to legitimate
@@ -33,7 +33,7 @@ func mapsRestrictionProbe(key string, headers map[string]string) (body []byte, k
 	if rerr != nil {
 		return nil, "", rerr
 	}
-	req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

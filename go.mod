@@ -1,4 +1,4 @@
-module github.com/morkin1792/aiza-key-scanner
+module github.com/morkin1792/aiza-key-analyzer
 
 go 1.26.1
 

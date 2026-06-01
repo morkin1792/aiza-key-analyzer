@@ -31,3 +31,4 @@ go.work.sum
 # .idea/
 # .vscode/
 aiza-key-scanner
+aiza-key-analyzer

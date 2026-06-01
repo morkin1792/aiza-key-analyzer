@@ -1,10 +1,10 @@
-// aiza-key-scanner — GCP API Key Validator
+// aiza-key-analyzer — Google API Key Analyzer
 //
-// Validates leaked GCP API Keys (AIzaSy...) and determines which Google APIs
+// Validates leaked Google AIza API Keys (AIzaSy...), determines which Google APIs
 // a key can access, collecting non-destructive PoC data to demonstrate impact.
 //
 // This file is the binary entry point. The scan engine, every check, the
-// output renderer and the discovery pipeline all live in internal/scanner.
+// output renderer and the discovery pipeline all live in internal/analyzer.
 // Keep this file focused on flag parsing and orchestration only.
 package main
 
@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/morkin1792/aiza-key-scanner/internal/scanner"
+	"github.com/morkin1792/aiza-key-analyzer/internal/analyzer"
 )
 
 func main() {
@@ -35,7 +35,7 @@ func main() {
 	flagOutput := flag.String("o", "", "Save a human-readable summary of findings to this file (appends to existing content).")
 	flagCategories := flag.String("categories", "", "Comma-separated category allow-list (GCP, Firebase, Maps, Search, AI, Media, Identity) — only checks whose Category matches will run")
 	flagTimeout := flag.Int("timeout", 30, "Per-request HTTP timeout in seconds")
-	flagDualStack := flag.Bool("dual-stack", false, "Allow IPv6 (dual-stack) dialing. By default the scanner dials IPv4 only, which avoids 'connect: network is unreachable' errors on hosts whose IPv6 route is present but black-holed. Set this only if you actually need IPv6 (e.g. an IPv6-only network).")
+	flagDualStack := flag.Bool("dual-stack", false, "Allow IPv6 (dual-stack) dialing. By default the analyzer dials IPv4 only, which avoids 'connect: network is unreachable' errors on hosts whose IPv6 route is present but black-holed. Set this only if you actually need IPv6 (e.g. an IPv6-only network).")
 	flagProxy := flag.String("proxy", "", "Route every HTTP request through this proxy (e.g. http://127.0.0.1:8080). Useful for inspecting traffic in Burp/mitmproxy. TLS verification is disabled while -proxy is set.")
 	flagTestPhone := flag.String("test-phone", "", "E.164 phone number you control (e.g. +15551234567); opts into the SMS-abuse check. Will SEND a real SMS to this number if the project allows it.")
 	flagTestEmail := flag.String("test-email", "", "An email address you control; opts into the password-reset-spam check. Will SEND a real email to this address if the project allows it.")
@@ -49,14 +49,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Examples:")
 		fmt.Fprintln(os.Stderr, "  # Simple")
-		fmt.Fprintln(os.Stderr, "  cat keys.txt | aiza-key-scanner")
+		fmt.Fprintln(os.Stderr, "  cat keys.txt | aiza-key-analyzer")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  # Complete")
-		fmt.Fprintln(os.Stderr, "  aiza-key-scanner -f keys.txt -o findings.txt -project-id my-project-dev -test-phone +15551234567 -test-email me@mybox.example -proxy http://127.0.0.1:8080")
+		fmt.Fprintln(os.Stderr, "  aiza-key-analyzer -f keys.txt -o findings.md -project-id my-project-dev -test-phone +15551234567 -test-email me@mybox.example -proxy http://127.0.0.1:8080")
 	}
 	flag.Parse()
 
-	scanner.Verbose = *flagVerbose
+	analyzer.Verbose = *flagVerbose
 
 	transport := &http.Transport{
 		// Close pooled idle connections after 30s so Go beats the server (and
@@ -100,12 +100,12 @@ func main() {
 		// scan-time pentesting.
 		transport.DisableKeepAlives = true
 	}
-	scanner.Client = &http.Client{
+	analyzer.Client = &http.Client{
 		Timeout:   time.Duration(*flagTimeout) * time.Second,
 		Transport: transport,
 	}
 
-	keys := scanner.CollectKeys(*flagKey, *flagFile)
+	keys := analyzer.CollectKeys(*flagKey, *flagFile)
 	if len(keys) == 0 {
 		fmt.Fprintln(os.Stderr, "No keys provided. Use -k, -f, or pipe via stdin.")
 		flag.Usage()
@@ -114,7 +114,7 @@ func main() {
 
 	// Warn about keys that don't match expected format, with specific credential type hints
 	for _, k := range keys {
-		if !scanner.KeyPattern.MatchString(k) {
+		if !analyzer.KeyPattern.MatchString(k) {
 			trimmed := strings.TrimSpace(k)
 			switch {
 			case strings.HasPrefix(trimmed, "ya29."):
@@ -133,7 +133,7 @@ func main() {
 		}
 	}
 
-	checks := scanner.BuildChecks(*flagTestPhone, *flagTestEmail)
+	checks := analyzer.BuildChecks(*flagTestPhone, *flagTestEmail)
 
 	// Filter by category if specified
 	if *flagCategories != "" {
@@ -141,7 +141,7 @@ func main() {
 		for _, c := range strings.Split(*flagCategories, ",") {
 			allowed[strings.TrimSpace(c)] = true
 		}
-		var filtered []scanner.ServiceCheck
+		var filtered []analyzer.ServiceCheck
 		for _, c := range checks {
 			if allowed[c.Category] {
 				filtered = append(filtered, c)
@@ -171,7 +171,7 @@ func main() {
 		}
 		defer outputFile.Close()
 		// Top-of-document Markdown header for the file.
-		fmt.Fprint(outputFile, scanner.MarkdownFindingsHeader)
+		fmt.Fprint(outputFile, analyzer.MarkdownFindingsHeader)
 	}
 
 	var outputMu sync.Mutex
@@ -179,21 +179,21 @@ func main() {
 	// With multiple keys, per-check live output from parallel goroutines
 	// interleaves into nonsense. Suppress it and rely on the grouped
 	// summaries at the end. Single-key runs keep their live trace.
-	if len(keys) > 1 && scanner.Silent == 0 {
-		scanner.Silent = 1
+	if len(keys) > 1 && analyzer.Silent == 0 {
+		analyzer.Silent = 1
 	}
 
 	// Multi-key runs lose the per-key check spinner (it's silenced above), so
 	// show one overall "N/Total keys" progress line on stderr instead.
-	var keyProgress *scanner.MultiKeyProgress
+	var keyProgress *analyzer.MultiKeyProgress
 	if len(keys) > 1 {
-		keyProgress = scanner.NewMultiKeyProgress(len(keys))
+		keyProgress = analyzer.NewMultiKeyProgress(len(keys))
 		keyProgress.Start()
 	}
 
 	sem := make(chan struct{}, *flagWorkers)
 	var wg sync.WaitGroup
-	allResults := make([]scanner.KeyResult, len(keys))
+	allResults := make([]analyzer.KeyResult, len(keys))
 
 	for i, key := range keys {
 		wg.Add(1)
@@ -201,7 +201,7 @@ func main() {
 		go func(idx int, k string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			kr := scanner.ValidateKey(k, *flagProject, checks)
+			kr := analyzer.ValidateKey(k, *flagProject, checks)
 			allResults[idx] = kr
 			if keyProgress != nil {
 				keyProgress.Tick()
@@ -220,7 +220,7 @@ func main() {
 			if outputFile != nil {
 				// Same Markdown the terminal renders (without colors).
 				outputMu.Lock()
-				scanner.WriteKeyMarkdown(outputFile, kr)
+				analyzer.WriteKeyMarkdown(outputFile, kr)
 				outputMu.Unlock()
 			}
 		}(i, key)
@@ -232,10 +232,10 @@ func main() {
 
 	// Print summaries together, in input order, so multi-key runs are
 	// readable end-to-end instead of interleaved.
-	if scanner.Silent < 2 {
-		scanner.PrintFindingsHeader()
+	if analyzer.Silent < 2 {
+		analyzer.PrintFindingsHeader()
 	}
 	for _, kr := range allResults {
-		scanner.PrintSummary(kr)
+		analyzer.PrintSummary(kr)
 	}
 }

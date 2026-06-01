@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"net/url"

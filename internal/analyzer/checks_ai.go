@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"encoding/json"
@@ -63,7 +63,7 @@ func check4_37() ServiceCheck {
 //  4. A hard-coded fallback when the listing endpoint is denied
 //
 // We probe `/v1beta/models` because hard-coding a specific version is brittle
-// — Google deprecates models on roughly an 18-month cycle and the scanner
+// — Google deprecates models on roughly an 18-month cycle and the analyzer
 // would silently return false negatives on every key once the chosen version
 // disappears.
 func pickGeminiModel(escKey string) string {
@@ -201,7 +201,7 @@ func checkVertexAIPredict() ServiceCheck {
 	return ServiceCheck{
 		Desc: "The unrestricted key can drive billable Vertex AI Gemini inference on the project, letting an attacker run model requests on the project's account (cost abuse / model access).",
 		Name: "Vertex AI Prediction Abuse (Unrestricted Key)", Category: "AI", NeedsProject: true,
-		PoC: `# Picks the same model the scanner used by listing models on the public Gemini API
+		PoC: `# Picks the same model the analyzer used by listing models on the public Gemini API
 MODEL=$(curl -s 'https://generativelanguage.googleapis.com/v1beta/models?key={KEY}' | jq -r '.models[] | select(.supportedGenerationMethods | index("generateContent")) | .name' | sed 's|^models/||' | grep -E 'flash' | grep -v -E 'exp|thinking|live' | head -1)
 curl -s -X POST "https://us-central1-aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/us-central1/publishers/google/models/${MODEL}:generateContent?key={KEY}" -H 'Content-Type: application/json' -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"maxOutputTokens":1}}'`,
 		Run: func(key, projectID string) CheckResult {

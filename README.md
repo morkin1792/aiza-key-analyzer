@@ -1,4 +1,4 @@
-# 🔍 aiza-key-scanner
+# 🔍 aiza-key-analyzer
 ![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)
 
@@ -23,26 +23,26 @@ Findings are reported as **CONFIRMED** (confirmed-vulnerable) or **POTENTIAL** (
 ## 📦 Installation
 
 ```
-go install github.com/morkin1792/aiza-key-scanner@latest
+go install github.com/morkin1792/aiza-key-analyzer@latest
 ```
 
 Or:
 
 ```
-git clone https://github.com/morkin1792/aiza-key-scanner && cd aiza-key-scanner && go build -o aiza-key-scanner .
+git clone https://github.com/morkin1792/aiza-key-analyzer && cd aiza-key-analyzer && go build -o aiza-key-analyzer .
 ```
 
 ## 🛠️ Usage
 
 ```bash
 # Pipe keys via stdin, save findings to a file
-cat keys.txt | aiza-key-scanner -o findings.md
+cat keys.txt | aiza-key-analyzer -o findings.md
 
 # Single key, verbose (full raw JSON + every check result)
-aiza-key-scanner -k AIzaSy... -v
+aiza-key-analyzer -k AIzaSy... -v
 
 # Full engagement: file input, fallback project, side-effect opt-ins, proxy
-aiza-key-scanner -f keys.txt -project-id my-project-prod \
+aiza-key-analyzer -f keys.txt -project-id my-project-prod \
     -test-phone +15551234567 -test-email me@mybox.example \
     -o findings.md -proxy http://127.0.0.1:8080
 ```

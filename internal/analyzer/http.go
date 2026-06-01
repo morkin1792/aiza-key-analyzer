@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"bytes"
@@ -82,7 +82,7 @@ func doCustomCtx(parent context.Context, method, url string, body []byte, header
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -131,7 +131,7 @@ func doMapsGet(u string) (int, []byte, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 	req.Header.Set("Referer", "https://aiza-poc.example.com")
 	resp, err := Client.Do(req)
 	for attempt := 0; err != nil && isTransientNetError(err) && attempt < len(transientBackoffs); attempt++ {
@@ -140,7 +140,7 @@ func doMapsGet(u string) (int, []byte, error) {
 		if err != nil {
 			return 0, nil, err
 		}
-		req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		req.Header.Set("Referer", "https://aiza-poc.example.com")
 		resp, err = Client.Do(req)
 	}
@@ -184,7 +184,7 @@ func doRequestCtx(parent context.Context, method, url string, body []byte) (int,
 	if err != nil {
 		return 0, nil, err
 	}
-	req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -203,7 +203,7 @@ func doRequestCtx(parent context.Context, method, url string, body []byte) (int,
 		if err != nil {
 			return 0, nil, err
 		}
-		req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -231,7 +231,7 @@ func doRequestCtx(parent context.Context, method, url string, body []byte) (int,
 			cancel2()
 			return 429, respBody, nil
 		}
-		req2.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		req2.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		if body != nil {
 			req2.Header.Set("Content-Type", "application/json")
 		}

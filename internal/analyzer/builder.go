@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 // BuildChecks returns the full list of service checks in the canonical order
 // (GCP → Firebase → Maps → Search → AI → Media → Identity → opt-ins).

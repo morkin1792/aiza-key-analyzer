@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"bytes"
@@ -375,13 +375,13 @@ func checkFirebaseFirestore() ServiceCheck {
 // probe on success. Write rules are normally stricter than read rules, so a
 // success here is a much bigger finding than a successful read.
 
-// firestoreWriteProbe creates a document at aiza_scanner_probe/<ts>, then
+// firestoreWriteProbe creates a document at aiza_analyzer_probe/<ts>, then
 // deletes it. Probe path is namespaced to avoid colliding with real data.
 func firestoreWriteProbe(escKey, projectID, idToken string) CheckResult {
-	docPath := fmt.Sprintf("aiza_scanner_probe/probe-%d", time.Now().UnixNano())
+	docPath := fmt.Sprintf("aiza_analyzer_probe/probe-%d", time.Now().UnixNano())
 	u := fmt.Sprintf("https://firestore.googleapis.com/v1/projects/%s/databases/(default)/documents/%s?key=%s",
 		projectID, docPath, escKey)
-	payload := []byte(`{"fields":{"probe":{"stringValue":"aiza-key-scanner"}}}`)
+	payload := []byte(`{"fields":{"probe":{"stringValue":"aiza-key-analyzer"}}}`)
 
 	ctx, cancel := context.WithTimeout(context.Background(), Client.Timeout)
 	defer cancel()
@@ -390,7 +390,7 @@ func firestoreWriteProbe(escKey, projectID, idToken string) CheckResult {
 		return cr("Firebase Firestore Unauthorized Write", "Firebase", StatusError, err.Error(), nil)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 	if idToken != "" {
 		req.Header.Set("Authorization", "Bearer "+idToken)
 	}
@@ -405,7 +405,7 @@ func firestoreWriteProbe(escKey, projectID, idToken string) CheckResult {
 		dctx, dcancel := context.WithTimeout(context.Background(), Client.Timeout)
 		defer dcancel()
 		dreq, _ := http.NewRequestWithContext(dctx, "DELETE", u, nil)
-		dreq.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		dreq.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		if idToken != "" {
 			dreq.Header.Set("Authorization", "Bearer "+idToken)
 		}
@@ -428,12 +428,12 @@ func checkFirebaseFirestoreWrite() ServiceCheck {
 		Name: "Firebase Firestore Unauthorized Write", Category: "Firebase", NeedsProject: true, NeedsAuth: true,
 		PoC: `# 1. Get an idToken via anonymous signup
 TOKEN=$(curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={KEY}' -H 'Content-Type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
-# 2. Create a doc at aiza_scanner_probe/poc with the token
-curl -s -X PATCH "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents/aiza_scanner_probe/poc?key={KEY}" -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" -d '{"fields":{"probe":{"stringValue":"poc"}}}'
+# 2. Create a doc at aiza_analyzer_probe/poc with the token
+curl -s -X PATCH "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents/aiza_analyzer_probe/poc?key={KEY}" -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" -d '{"fields":{"probe":{"stringValue":"poc"}}}'
 # 3. Read it back to verify the write succeeded
-curl -s "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents/aiza_scanner_probe/poc?key={KEY}" -H "Authorization: Bearer ${TOKEN}"
+curl -s "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents/aiza_analyzer_probe/poc?key={KEY}" -H "Authorization: Bearer ${TOKEN}"
 # 4. Delete the probe doc to leave no trace
-curl -s -X DELETE "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents/aiza_scanner_probe/poc?key={KEY}" -H "Authorization: Bearer ${TOKEN}"`,
+curl -s -X DELETE "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(default)/documents/aiza_analyzer_probe/poc?key={KEY}" -H "Authorization: Bearer ${TOKEN}"`,
 		RunAuth: func(key, projectID, idToken string) CheckResult {
 			return firestoreWriteProbe(key, projectID, idToken)
 		},
@@ -451,19 +451,19 @@ func rtdbWriteProbe(projectID, idToken string) (CheckResult, string) {
 	}
 	var lastForbidden []byte
 	for _, h := range hosts {
-		probePath := fmt.Sprintf("aiza_scanner_probe-%d", time.Now().UnixNano())
+		probePath := fmt.Sprintf("aiza_analyzer_probe-%d", time.Now().UnixNano())
 		u := fmt.Sprintf("https://%s/%s.json", h, probePath)
 		if idToken != "" {
 			u += "?auth=" + url.QueryEscape(idToken)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), Client.Timeout)
-		req, err := http.NewRequestWithContext(ctx, "PUT", u, bytes.NewReader([]byte(`"aiza-key-scanner"`)))
+		req, err := http.NewRequestWithContext(ctx, "PUT", u, bytes.NewReader([]byte(`"aiza-key-analyzer"`)))
 		if err != nil {
 			cancel()
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		resp, err := Client.Do(req)
 		if err != nil {
 			cancel()
@@ -476,7 +476,7 @@ func rtdbWriteProbe(projectID, idToken string) (CheckResult, string) {
 			// Cleanup
 			dctx, dcancel := context.WithTimeout(context.Background(), Client.Timeout)
 			dreq, _ := http.NewRequestWithContext(dctx, "DELETE", u, nil)
-			dreq.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+			dreq.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 			dresp, derr := Client.Do(dreq)
 			dcancel()
 			if derr == nil {
@@ -581,12 +581,12 @@ func checkFirebaseRTDBWrite() ServiceCheck {
 		Name: "Firebase RTDB Unauthorized Write", Category: "Firebase", NeedsProject: true, NeedsAuth: true,
 		PoC: `# 1. Get an idToken via anonymous signup
 TOKEN=$(curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={KEY}' -H 'Content-Type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
-# 2. PUT a value at /aiza_scanner_probe with the token (replace host if needed)
-curl -s -X PUT "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_scanner_probe.json?auth=${TOKEN}" -d '"poc"'
+# 2. PUT a value at /aiza_analyzer_probe with the token (replace host if needed)
+curl -s -X PUT "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_analyzer_probe.json?auth=${TOKEN}" -d '"poc"'
 # 3. GET the same node back to verify the write
-curl -s "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_scanner_probe.json?auth=${TOKEN}"
+curl -s "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_analyzer_probe.json?auth=${TOKEN}"
 # 4. DELETE the probe node to leave no trace
-curl -s -X DELETE "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_scanner_probe.json?auth=${TOKEN}"`,
+curl -s -X DELETE "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_analyzer_probe.json?auth=${TOKEN}"`,
 		RunAuth: func(key, projectID, idToken string) CheckResult {
 			result, _ := rtdbWriteProbe(projectID, idToken)
 			return result
@@ -612,14 +612,14 @@ func storageWriteProbe(escKey, projectID, idToken string) CheckResult {
 	var transportErrors []string
 	var unexpectedStatuses []string
 	for _, bucket := range buckets {
-		name := fmt.Sprintf("aiza_scanner_probe-%d.txt", time.Now().UnixNano())
+		name := fmt.Sprintf("aiza_analyzer_probe-%d.txt", time.Now().UnixNano())
 		u := fmt.Sprintf("https://firebasestorage.googleapis.com/v0/b/%s/o?uploadType=media&name=%s&key=%s",
 			bucket, url.QueryEscape(name), escKey)
 		headers := map[string]string{"Content-Type": "text/plain"}
 		if idToken != "" {
 			headers["Authorization"] = "Bearer " + idToken
 		}
-		code, body, err := doCustomCtx(context.Background(), "POST", u, []byte("aiza-key-scanner"), headers)
+		code, body, err := doCustomCtx(context.Background(), "POST", u, []byte("aiza-key-analyzer"), headers)
 		if err != nil {
 			transportErrors = append(transportErrors, bucket+": "+err.Error())
 			continue
@@ -894,7 +894,7 @@ func firestoreReadCollection(escKey, projectID, idToken, collection string) (sta
 	if err != nil {
 		return StatusError, 0, nil
 	}
-	req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 	if idToken != "" {
 		req.Header.Set("Authorization", "Bearer "+idToken)
 	}

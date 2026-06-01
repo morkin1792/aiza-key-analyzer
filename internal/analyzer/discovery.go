@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"bytes"
@@ -255,7 +255,7 @@ func refreshTokenExchange(parent context.Context, escKey, refreshToken string) s
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 	resp, err := Client.Do(req)
 	if err != nil {
 		return ""
@@ -447,7 +447,7 @@ func discoverProjectID(key, escKey string) *discoveryAccum {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-goog-api-key", escKey)
-		req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+		req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 		resp, err := Client.Do(req)
 		if err != nil {
 			return

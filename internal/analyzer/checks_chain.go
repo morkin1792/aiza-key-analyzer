@@ -1,4 +1,4 @@
-package scanner
+package analyzer
 
 import (
 	"bytes"
@@ -262,7 +262,7 @@ curl -s -X POST 'https://us-central1-{PROJECT}.cloudfunctions.net/FUNC_NAME' -H 
 				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Authorization", "Bearer "+idToken)
-				req.Header.Set("User-Agent", "aiza-key-scanner/1.0")
+				req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
 				resp, err := Client.Do(req)
 				if err != nil {
 					return
