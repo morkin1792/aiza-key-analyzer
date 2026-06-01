@@ -1171,14 +1171,14 @@ func storageRootReadable(escKey, projectID, idToken string) bool {
 func checkStorageCommonPaths() ServiceCheck {
 	return ServiceCheck{
 		Desc: "Probing well-known object prefixes returns listings without proper authorization, confirming Storage content is publicly accessible at common paths.",
-		Name: "Storage Public Object Access (Common Paths)", Category: "Firebase", NeedsProject: true,
+		Name: "Storage Public Listing (Common Paths)", Category: "Firebase", NeedsProject: true,
 		PoC: `# List objects under a specific Storage prefix (replace {PREFIX})
 curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?prefix={PREFIX}'`,
 		Run: func(key, projectID string) CheckResult {
 			// Suppress redundancy: if /o lists publicly, every prefix probe
-			// would too — that case is already on the "Firebase Storage Read Access" row.
+			// would too — that case is already on the "Firebase Storage Public Listing" row.
 			if storageRootReadable(key, projectID, "") {
-				return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusNotVulnerable,
+				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusNotVulnerable,
 					"Skipped — root listing on bucket /o already public (covered by Firebase Storage finding)", nil)
 			}
 			buckets := []string{projectID + ".appspot.com", projectID + ".firebasestorage.app"}
@@ -1199,16 +1199,16 @@ curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?pre
 				}
 			}
 			if len(hits) > 0 {
-				return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusPotential,
+				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusPotential,
 					"Public-readable prefixes (root denied): "+strings.Join(hits, ", ")+" — path-scoped rules grant access to specific prefixes; review listed objects", nil)
 			}
-			return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusForbidden, "No common Storage prefix is anonymously listable", nil)
+			return cr("Storage Public Listing (Common Paths)", "Firebase", StatusForbidden, "No common Storage prefix is anonymously listable", nil)
 		},
 		RunAuth: func(key, projectID, idToken string) CheckResult {
 			// Same suppression: if root is readable (anon or auth), the
 			// per-prefix detail isn't new — Firebase Storage already covers it.
 			if storageRootReadable(key, projectID, "") || storageRootReadable(key, projectID, idToken) {
-				return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusNotVulnerable,
+				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusNotVulnerable,
 					"Skipped — root listing on bucket /o is accessible (covered by Firebase Storage finding)", nil)
 			}
 			buckets := []string{projectID + ".appspot.com", projectID + ".firebasestorage.app"}
@@ -1247,14 +1247,14 @@ curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?pre
 				}
 			}
 			if len(bypass) > 0 {
-				return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusConfirmed,
+				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusConfirmed,
 					fmt.Sprintf("Auth-bypass listings on %s prefixes (root denied): %s — path-scoped rules require auth but anon-signup JWT bypasses", workingBucket, strings.Join(bypass, ", ")), nil)
 			}
 			if len(anonHits) > 0 {
-				return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusPotential,
+				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusPotential,
 					fmt.Sprintf("Public-readable prefixes on %s (root denied): %s — review listed objects", workingBucket, strings.Join(anonHits, ", ")), nil)
 			}
-			return cr("Storage Public Object Access (Common Paths)", "Firebase", StatusForbidden, "No common Storage prefix is readable", nil)
+			return cr("Storage Public Listing (Common Paths)", "Firebase", StatusForbidden, "No common Storage prefix is readable", nil)
 		},
 	}
 }

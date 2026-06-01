@@ -155,21 +155,14 @@ func renderKeyMarkdown(kr KeyResult, colored bool) string {
 	// product surface at a time. The same slice feeds the count lines, the
 	// summary table, and the detailed findings section.
 	var findings []CheckResult
-	confirmed := 0
-	potential := 0
 	for _, c := range kr.Results {
 		switch c.Status {
-		case StatusConfirmed:
-			confirmed++
-			findings = append(findings, c)
-		case StatusPotential:
-			potential++
+		case StatusConfirmed, StatusPotential:
 			findings = append(findings, c)
 		}
 	}
 	if len(findings) > 0 {
-		b.WriteString(fmt.Sprintf("%s Confirmed findings: %d\n", dash, confirmed))
-		b.WriteString(fmt.Sprintf("%s Potential findings: %d\n", dash, potential))
+		b.WriteString(fmt.Sprintf("%s Found findings: %d\n", dash, len(findings)))
 	}
 	b.WriteString("\n")
 

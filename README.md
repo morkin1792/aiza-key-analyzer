@@ -77,8 +77,7 @@ The summary is Markdown — the same content goes to stdout (with ANSI color) an
 ## AIzaSy...H4cK
 - project_id: my-project-prod
 - project_id source: identitytoolkit-getProjectConfig; firebase-signup-jwt
-- Confirmed findings: 2
-- Potential findings: 1
+- Found findings: 3
 
 ### Summary Table
 | Finding | Status |

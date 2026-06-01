@@ -1036,7 +1036,7 @@ curl -s "https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o" -H
 func checkFirebaseStorage() ServiceCheck {
 	return ServiceCheck{
 		Desc: "Firebase Storage objects are listable without proper authorization (a public rule or an anonymous-token bypass of an auth-only rule), exposing user-uploaded files; review listed objects for accidentally-public sensitive data.",
-		Name: "Firebase Storage Public Access", Category: "Firebase", NeedsProject: true,
+		Name: "Firebase Storage Public Listing", Category: "Firebase", NeedsProject: true,
 		// Firebase Storage public listing routes via the bucket name; the API
 		// key adds no value here and is omitted so the PoC proves the leak
 		// without involving the leaked credential.
@@ -1047,10 +1047,10 @@ func checkFirebaseStorage() ServiceCheck {
 				// Public read without auth — almost always intentional (banner
 				// images, public assets). Promote to Potential so the operator
 				// reviews contents for accidentally-public sensitive data.
-				return cr("Firebase Storage Public Access", "Firebase", StatusPotential,
+				return cr("Firebase Storage Public Listing", "Firebase", StatusPotential,
 					detail+" — public bucket; review listed objects for accidentally-exposed sensitive data", body)
 			}
-			return cr("Firebase Storage Public Access", "Firebase", status, detail, body)
+			return cr("Firebase Storage Public Listing", "Firebase", status, detail, body)
 		},
 		RunAuth: func(key, projectID, idToken string) CheckResult {
 			anonStatus, anonDetail, anonBody := firebaseStorageList(key, projectID, "")
@@ -1060,7 +1060,7 @@ func checkFirebaseStorage() ServiceCheck {
 			// Auth-bypass: rules required auth, but anonymous-signup token slipped past.
 			// This is a near-certain misconfiguration → Vulnerable.
 			if !anonOK && authOK {
-				result := cr("Firebase Storage Public Access", "Firebase", StatusConfirmed,
+				result := cr("Firebase Storage Public Listing", "Firebase", StatusConfirmed,
 					authDetail+" — rules require auth but anonymous-signup JWT bypasses them (likely misconfiguration)", authBody)
 				result.PoC = fillPoC(storageAuthPoCTemplate, key, projectID, "")
 				return result
@@ -1068,14 +1068,14 @@ func checkFirebaseStorage() ServiceCheck {
 			// Public read works → likely intentional, may still contain
 			// accidentally-public sensitive data → Potential.
 			if anonOK {
-				return cr("Firebase Storage Public Access", "Firebase", StatusPotential,
+				return cr("Firebase Storage Public Listing", "Firebase", StatusPotential,
 					anonDetail+" — public bucket; review listed objects for accidentally-exposed sensitive data", anonBody)
 			}
 			// Neither anon nor auth — properly restricted.
 			if anonStatus == StatusForbidden {
-				return cr("Firebase Storage Public Access", "Firebase", anonStatus, anonDetail, anonBody)
+				return cr("Firebase Storage Public Listing", "Firebase", anonStatus, anonDetail, anonBody)
 			}
-			return cr("Firebase Storage Public Access", "Firebase", authStatus, authDetail, authBody)
+			return cr("Firebase Storage Public Listing", "Firebase", authStatus, authDetail, authBody)
 		},
 	}
 }
