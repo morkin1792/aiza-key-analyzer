@@ -199,7 +199,10 @@ func renderKeyMarkdown(kr KeyResult, colored bool) string {
 	for _, c := range findings {
 		heading := fmt.Sprintf("#### [%s] %s", c.Category, c.Service)
 		if colored {
-			heading = colorForStatus(c.Status).Sprint(heading)
+			// Finding titles are always green (like the other headings); the
+			// CONFIRMED/POTENTIAL distinction is carried by the Status line and
+			// the Summary Table's status column, not by the title color.
+			heading = colorConfirmed.Sprint(heading)
 		}
 		b.WriteString(heading + "\n")
 

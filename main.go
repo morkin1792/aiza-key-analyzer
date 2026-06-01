@@ -25,24 +25,29 @@ import (
 	"github.com/morkin1792/aiza-key-analyzer/internal/analyzer"
 )
 
+// version is the released tool version, surfaced in -h/-help and -version.
+const version = "1.2"
+
 func main() {
-	flagKey := flag.String("k", "", "Single API key")
+	flagKey := flag.String("k", "", "Pass a single API key as input.")
 	flagFile := flag.String("f", "", "Input file containing keys to test. One per line.")
-	flagProject := flag.String("project-id", "", "Fallback GCP Project ID — used when discovery can't find the slug (e.g. Firebase Storage/RTDB probes need a slug, not a number)")
-	flagVerbose := flag.Bool("v", false, "Verbose: print full raw JSON responses + every check's result (default hides FORBIDDEN / NOT_CONFIRMED rows)")
-	flagWorkers := flag.Int("w", 5, "Worker pool size — number of keys scanned in parallel")
-	flagJsonl := flag.String("j", "", "Append every key's full result (every check) to this file as JSONL — useful for automation")
-	flagOutput := flag.String("o", "", "Save a human-readable summary of findings to this file (appends to existing content).")
-	flagCategories := flag.String("categories", "", "Comma-separated category allow-list (GCP, Firebase, Maps, Search, AI, Media, Identity) — only checks whose Category matches will run")
-	flagTimeout := flag.Int("timeout", 30, "Per-request HTTP timeout in seconds")
+	flagProject := flag.String("project-id", "", "Fallback GCP Project ID — used when discovery can't find the slug (e.g. Firebase Storage/RTDB probes need a slug, not a number).")
+	flagVerbose := flag.Bool("v", false, "Verbose: print full raw JSON responses + every check's result (default hides FORBIDDEN / NOT_CONFIRMED rows).")
+	flagWorkers := flag.Int("w", 5, "Worker pool size — number of keys scanned in parallel.")
+	flagJsonl := flag.String("j", "", "Save results to this file as JSONL.")
+	flagOutput := flag.String("o", "", "Save a human-readable summary of findings to this file.")
+	flagCategories := flag.String("categories", "", "Comma-separated list of test categories to run. Possibilities are: GCP, Firebase, Maps, Search, AI, Media, Identity. If nothing is specified, by default, all will be selected.")
+	flagTimeout := flag.Int("timeout", 30, "Per-request HTTP timeout in seconds.")
 	flagDualStack := flag.Bool("dual-stack", false, "Allow IPv6 (dual-stack) dialing. By default the analyzer dials IPv4 only, which avoids 'connect: network is unreachable' errors on hosts whose IPv6 route is present but black-holed. Set this only if you actually need IPv6 (e.g. an IPv6-only network).")
 	flagProxy := flag.String("proxy", "", "Route every HTTP request through this proxy (e.g. http://127.0.0.1:8080). Useful for inspecting traffic in Burp/mitmproxy. TLS verification is disabled while -proxy is set.")
 	flagTestPhone := flag.String("test-phone", "", "E.164 phone number you control (e.g. +15551234567); opts into the SMS-abuse check. Will SEND a real SMS to this number if the project allows it.")
 	flagTestEmail := flag.String("test-email", "", "An email address you control; opts into the password-reset-spam check. Will SEND a real email to this address if the project allows it.")
+	flagVersion := flag.Bool("version", false, "Print the tool version and exit.")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Scans leaked Google API keys (AIza...) and reports potential findings for each key, together with their PoCs.")
+		fmt.Fprintf(os.Stderr, "aiza-key-analyzer v%s\n", version)
+		fmt.Fprintln(os.Stderr, "Scans leaked Google API keys (AIza...) and reports potential findings for each key, together with their PoCs.\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Options:")
 		flag.PrintDefaults()
@@ -55,6 +60,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  aiza-key-analyzer -f keys.txt -o findings.md -project-id my-project-dev -test-phone +15551234567 -test-email me@mybox.example -proxy http://127.0.0.1:8080")
 	}
 	flag.Parse()
+
+	if *flagVersion {
+		fmt.Printf("aiza-key-analyzer v%s\n", version)
+		os.Exit(0)
+	}
 
 	analyzer.Verbose = *flagVerbose
 
@@ -153,7 +163,9 @@ func main() {
 	var jsonlFile *os.File
 	if *flagJsonl != "" {
 		var err error
-		jsonlFile, err = os.OpenFile(*flagJsonl, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		// Truncate any stale file up front, then append each key's result as
+		// the scan progresses. A previous run's output never bleeds into this one.
+		jsonlFile, err = os.OpenFile(*flagJsonl, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening JSONL file: %v\n", err)
 			os.Exit(1)
@@ -164,7 +176,9 @@ func main() {
 	var outputFile *os.File
 	if *flagOutput != "" {
 		var err error
-		outputFile, err = os.OpenFile(*flagOutput, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		// Truncate any stale file up front, then append each key's findings as
+		// the scan progresses. A previous run's output never bleeds into this one.
+		outputFile, err = os.OpenFile(*flagOutput, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening output file: %v\n", err)
 			os.Exit(1)

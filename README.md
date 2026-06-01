@@ -1,6 +1,7 @@
 # 🔍 aiza-key-analyzer
 ![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)
+![Release](https://img.shields.io/badge/release-v1.2-blue.svg?style=flat-square)
 
 Check leaked Google API keys (`AIzaSy...`) and determine which Google APIs they can access. Collects non-destructive proof-of-concept data to demonstrate impact during bug bounty engagements.
 
@@ -35,37 +36,14 @@ git clone https://github.com/morkin1792/aiza-key-analyzer && cd aiza-key-analyze
 ## 🛠️ Usage
 
 ```bash
-# Pipe keys via stdin, save findings to a file
+# simple
 cat keys.txt | aiza-key-analyzer -o findings.md
 
-# Single key, verbose (full raw JSON + every check result)
-aiza-key-analyzer -k AIzaSy... -v
-
-# Full engagement: file input, fallback project, side-effect opt-ins, proxy
+# or more complete
 aiza-key-analyzer -f keys.txt -project-id my-project-prod \
     -test-phone +15551234567 -test-email me@mybox.example \
     -o findings.md -proxy http://127.0.0.1:8080
 ```
-
-Keys are read from `-k`, `-f`, or stdin. Multi-key runs scan in parallel (`-w`) and show a live `N/Total keys` progress line on stderr; the findings report prints to stdout at the end.
-
-### 🚩 Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-k` | | Single API key |
-| `-f` | | File of newline-separated keys |
-| `-project-id` | | Fallback GCP project ID — used when discovery can't find the slug (some Firebase Storage/RTDB probes need a slug, not a number) |
-| `-o` | | Save the human-readable findings summary to a file (appends) |
-| `-j` | | Append every key's full per-check result as JSONL (automation) |
-| `-categories` | | Comma-separated category allow-list (e.g. `Maps,AI`) |
-| `-v` | `false` | Verbose: full raw JSON responses + every check's result |
-| `-w` | `5` | Worker pool size — keys scanned in parallel |
-| `-timeout` | `30` | Per-request HTTP timeout in seconds |
-| `-dual-stack` | `false` | Allow IPv6 dialing. Default is IPv4-only, which avoids `connect: network is unreachable` on hosts with broken/black-holed IPv6 |
-| `-proxy` | | Route every request through an HTTP proxy (Burp/mitmproxy). Disables TLS verification while set |
-| `-test-phone` | | E.164 number you control — opts into the SMS-abuse check. **Sends a real SMS** if the project allows it |
-| `-test-email` | | Email you control — opts into the password-reset-spam check. **Sends a real email** if the project allows it |
 
 ## 📝 Output
 
