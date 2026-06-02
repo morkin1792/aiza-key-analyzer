@@ -1,7 +1,7 @@
 # 🔍 aiza-key-analyzer
 ![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8.svg?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)
-![Release](https://img.shields.io/badge/release-v1.2-blue.svg?style=flat-square)
+![Release](https://img.shields.io/badge/release-v1.2.2-blue.svg?style=flat-square)
 
 Check leaked Google API keys (`AIzaSy...`) and determine which Google APIs they can access. Collects non-destructive proof-of-concept data to demonstrate impact during bug bounty engagements.
 

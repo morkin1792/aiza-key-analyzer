@@ -116,7 +116,7 @@ func ValidateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 		if chk.NeedsProject && kr.ProjectID == "" {
 			results[i] = CheckResult{
 				Service: chk.Name, Category: chk.Category, Status: StatusError, StatusS: "error",
-				Detail: "Skipped — no project ID available (use -p flag)",
+				Detail: "Skipped — no project ID found (use -project-id flag)",
 			}
 			prog.Tick()
 			continue

@@ -26,7 +26,7 @@ import (
 )
 
 // version is the released tool version, surfaced in -h/-help and -version.
-const version = "1.2"
+const version = "1.2.2"
 
 func main() {
 	flagKey := flag.String("k", "", "Pass a single API key as input.")
