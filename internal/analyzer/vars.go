@@ -18,7 +18,7 @@ var (
 	Verbose        bool
 	Silent         int // 0=normal, 1=summary-only, 2=no output
 	printMu        sync.Mutex
-	KeyPattern     = regexp.MustCompile(`^AIzaSy[A-Za-z0-9_-]{33}$`)
+	KeyPattern     = regexp.MustCompile(`^AIza[0-9A-Za-z_-]{35}$`)
 	colorConfirmed = color.New(color.FgGreen, color.Bold)
 	colorPot       = color.New(color.FgHiYellow, color.Bold)
 	colorForb      = color.New(color.FgYellow)

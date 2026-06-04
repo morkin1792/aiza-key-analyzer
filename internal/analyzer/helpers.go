@@ -145,7 +145,7 @@ var secretPatterns = []struct {
 	re    *regexp.Regexp
 }{
 	{"AWS access key", regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
-	{"Google API key", regexp.MustCompile(`AIzaSy[A-Za-z0-9_-]{33}`)},
+	{"Google API key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	{"Google OAuth token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]{20,}`)},
 	{"Slack token", regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`)},
 	{"GitHub PAT", regexp.MustCompile(`ghp_[A-Za-z0-9]{36}`)},

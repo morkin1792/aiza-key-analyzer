@@ -138,7 +138,7 @@ func main() {
 			case strings.HasPrefix(trimmed, "GOCSPX-") || strings.HasPrefix(trimmed, "GOOG"):
 				fmt.Fprintf(os.Stderr, "[WARN] %q looks like an OAuth client secret, not an API key\n", trimmed)
 			default:
-				fmt.Fprintf(os.Stderr, "[WARN] Key %q does not match expected AIzaSy... format\n", k)
+				fmt.Fprintf(os.Stderr, "[WARN] Key %q does not match expected AIza... format\n", k)
 			}
 		}
 	}
