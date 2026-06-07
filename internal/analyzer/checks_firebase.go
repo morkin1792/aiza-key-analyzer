@@ -182,6 +182,48 @@ func checkTenantEnumeration() ServiceCheck {
 	}
 }
 
+// rtdbRegions are the Realtime Database regional endpoints we guess as a
+// fallback. RTDB instances outside us-central1 are served at
+// {db}-default-rtdb.{region}.firebasedatabase.app; us-central1 uses the legacy
+// firebaseio.com hosts handled separately. The authoritative host (correct
+// region AND any non-default instance name) comes from the init.json databaseURL
+// in rtdbHosts; this list only matters when init.json is unavailable.
+var rtdbRegions = []string{
+	"us-east1", "us-west1",
+	"europe-west1", "europe-west3",
+	"asia-southeast1", "asia-east1", "asia-northeast1", "asia-south1",
+	"southamerica-east1", "australia-southeast1",
+}
+
+// rtdbHosts returns the candidate Realtime Database hosts for a project,
+// most-authoritative first and de-duplicated. The exact deployed instance is
+// taken from the public Hosting init.json's databaseURL when available (this is
+// the only signal that captures a non-default region or a named instance);
+// everything else is a best-effort fallback guess.
+func rtdbHosts(projectID string) []string {
+	var hosts []string
+	seen := map[string]bool{}
+	add := func(h string) {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			hosts = append(hosts, h)
+		}
+	}
+	// Authoritative: the databaseURL from the public Hosting config.
+	if cfg, _, ok := fetchFirebaseInitJSON(projectID); ok && cfg.DatabaseURL != "" {
+		if u, err := url.Parse(cfg.DatabaseURL); err == nil {
+			add(u.Host)
+		}
+	}
+	// Fallback guesses: default (us-central1) hosts, then known regions.
+	add(fmt.Sprintf("%s-default-rtdb.firebaseio.com", projectID))
+	add(fmt.Sprintf("%s.firebaseio.com", projectID))
+	for _, region := range rtdbRegions {
+		add(fmt.Sprintf("%s-default-rtdb.%s.firebasedatabase.app", projectID, region))
+	}
+	return hosts
+}
+
 // rtdbProbe walks the candidate RTDB hosts and reports the most permissive
 // outcome. authMode is "anon" or "auth"; for "auth" the supplied idToken is
 // passed as the RTDB `auth=` query parameter (RTDB does not accept the API
@@ -189,12 +231,7 @@ func checkTenantEnumeration() ServiceCheck {
 // database secret). The matched host is returned so callers can build a PoC
 // against the exact URL that worked (the host varies by region/legacy setup).
 func rtdbProbe(projectID, idToken, authMode string) (CheckResult, string) {
-	hosts := []string{
-		fmt.Sprintf("%s-default-rtdb.firebaseio.com", projectID),
-		fmt.Sprintf("%s-default-rtdb.europe-west1.firebasedatabase.app", projectID),
-		fmt.Sprintf("%s-default-rtdb.asia-southeast1.firebasedatabase.app", projectID),
-		fmt.Sprintf("%s.firebaseio.com", projectID),
-	}
+	hosts := rtdbHosts(projectID)
 	var bestForbidden *CheckResult
 	for _, h := range hosts {
 		u := "https://" + h + "/.json?shallow=true"
@@ -444,12 +481,7 @@ curl -s -X DELETE "https://firestore.googleapis.com/v1/projects/{PROJECT}/databa
 // rtdbWriteProbe walks RTDB host candidates and PUTs a probe value, then
 // best-effort deletes it. Returns the result and the matched host.
 func rtdbWriteProbe(projectID, idToken string) (CheckResult, string) {
-	hosts := []string{
-		fmt.Sprintf("%s-default-rtdb.firebaseio.com", projectID),
-		fmt.Sprintf("%s-default-rtdb.europe-west1.firebasedatabase.app", projectID),
-		fmt.Sprintf("%s-default-rtdb.asia-southeast1.firebasedatabase.app", projectID),
-		fmt.Sprintf("%s.firebaseio.com", projectID),
-	}
+	hosts := rtdbHosts(projectID)
 	var lastForbidden []byte
 	for _, h := range hosts {
 		probePath := fmt.Sprintf("aiza_analyzer_probe-%d", time.Now().UnixNano())
@@ -523,12 +555,7 @@ for h in {PROJECT}-default-rtdb.firebaseio.com \
 done
 # A 200 prints the project's RTDB security rules JSON.`,
 		Run: func(key, projectID string) CheckResult {
-			hosts := []string{
-				fmt.Sprintf("%s-default-rtdb.firebaseio.com", projectID),
-				fmt.Sprintf("%s-default-rtdb.europe-west1.firebasedatabase.app", projectID),
-				fmt.Sprintf("%s-default-rtdb.asia-southeast1.firebasedatabase.app", projectID),
-				fmt.Sprintf("%s.firebaseio.com", projectID),
-			}
+			hosts := rtdbHosts(projectID)
 			var disclosed *struct {
 				host string
 				body []byte
@@ -561,10 +588,14 @@ done
 					summary = summary[:220] + "…"
 				}
 				summary = strings.ReplaceAll(summary, "\n", " ")
-				return cr("RTDB Security Rules Disclosure", "Firebase", StatusConfirmed,
+				res := cr("RTDB Security Rules Disclosure", "Firebase", StatusConfirmed,
 					fmt.Sprintf("RTDB security rules ANONYMOUSLY READABLE at %s — rules engine fully disclosed: %s",
 						disclosed.host, summary),
 					disclosed.body)
+				// Point the PoC at the exact host that served the rules (may be a
+				// regional / named-instance endpoint, not the default one).
+				res.PoC = "curl -s 'https://" + disclosed.host + "/.settings/rules.json'"
+				return res
 			}
 			if sawForbidden {
 				return cr("RTDB Security Rules Disclosure", "Firebase", StatusNotVulnerable,
@@ -576,20 +607,27 @@ done
 	}
 }
 
+const rtdbWritePoCTemplate = `# 1. Get an idToken via anonymous signup
+TOKEN=$(curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={KEY}' -H 'Content-Type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
+# 2. PUT a value at /aiza_analyzer_probe with the token
+curl -s -X PUT "https://{HOST}/aiza_analyzer_probe.json?auth=${TOKEN}" -d '"poc"'
+# 3. GET the same node back to verify the write
+curl -s "https://{HOST}/aiza_analyzer_probe.json?auth=${TOKEN}"
+# 4. DELETE the probe node to leave no trace
+curl -s -X DELETE "https://{HOST}/aiza_analyzer_probe.json?auth=${TOKEN}"`
+
 func checkFirebaseRTDBWrite() ServiceCheck {
 	return ServiceCheck{
 		Desc: "RTDB Security Rules permit writes from this key/anonymous session, letting an attacker inject or overwrite data.",
 		Name: "Firebase RTDB Unauthorized Write", Category: "Firebase", NeedsProject: true, NeedsAuth: true,
-		PoC: `# 1. Get an idToken via anonymous signup
-TOKEN=$(curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={KEY}' -H 'Content-Type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
-# 2. PUT a value at /aiza_analyzer_probe with the token (replace host if needed)
-curl -s -X PUT "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_analyzer_probe.json?auth=${TOKEN}" -d '"poc"'
-# 3. GET the same node back to verify the write
-curl -s "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_analyzer_probe.json?auth=${TOKEN}"
-# 4. DELETE the probe node to leave no trace
-curl -s -X DELETE "https://{PROJECT}-default-rtdb.firebaseio.com/aiza_analyzer_probe.json?auth=${TOKEN}"`,
 		RunAuth: func(key, projectID, idToken string) CheckResult {
-			result, _ := rtdbWriteProbe(projectID, idToken)
+			result, host := rtdbWriteProbe(projectID, idToken)
+			// Point the PoC at the exact host that accepted the write (the
+			// matched host may be a regional / named-instance endpoint, not the
+			// default firebaseio.com one).
+			if result.Status == StatusConfirmed && host != "" {
+				result.PoC = fillPoC(strings.ReplaceAll(rtdbWritePoCTemplate, "{HOST}", host), key, projectID, "")
+			}
 			return result
 		},
 	}
@@ -1034,11 +1072,7 @@ curl -s 'https://{PROJECT}-default-rtdb.firebaseio.com/{PATH}.json'`,
 				return cr("RTDB Public Node Access (Common Paths)", "Firebase", StatusNotVulnerable,
 					"Skipped — RTDB root /.json is publicly readable (covered by Firebase RTDB finding)", nil)
 			}
-			hosts := []string{
-				projectID + "-default-rtdb.firebaseio.com",
-				projectID + "-default-rtdb.europe-west1.firebasedatabase.app",
-				projectID + ".firebaseio.com",
-			}
+			hosts := rtdbHosts(projectID)
 			var hits []string
 			for _, h := range hosts {
 				var local []string
@@ -1068,11 +1102,7 @@ curl -s 'https://{PROJECT}-default-rtdb.firebaseio.com/{PATH}.json'`,
 				return cr("RTDB Public Node Access (Common Paths)", "Firebase", StatusNotVulnerable,
 					"Skipped — RTDB root /.json is readable (covered by Firebase RTDB finding)", nil)
 			}
-			hosts := []string{
-				projectID + "-default-rtdb.firebaseio.com",
-				projectID + "-default-rtdb.europe-west1.firebasedatabase.app",
-				projectID + ".firebaseio.com",
-			}
+			hosts := rtdbHosts(projectID)
 			var workingHost string
 			var anonHits []string
 			var authHits []string
@@ -1277,21 +1307,42 @@ type firebaseInitConfig struct {
 	VapidKey          string `json:"vapidKey"`
 }
 
+// initJSONCache memoizes init.json fetches per project slug. The Remote Config,
+// Web Config and RTDB-host checks all need this same static file, so without a
+// cache a single key triggers ~6 fetches of it; with the cache it's at most one
+// network round-trip per project per run. Slugs are project-specific, so the
+// cache is safe within and across keys (negative results are cached too, so a
+// project with no Hosting domain isn't re-probed by every caller).
+var initJSONCache sync.Map // slug -> initJSONEntry
+
+type initJSONEntry struct {
+	cfg  firebaseInitConfig
+	body []byte
+	ok   bool
+}
+
 // fetchFirebaseInitJSON GETs the public Firebase Hosting reserved-URL config for
 // a project slug. Firebase serves /__/firebase/init.json on both the
 // .firebaseapp.com auth domain and the .web.app hosting domain (no auth, no key
 // needed), so we try both and return on the first 200 that carries an appId.
 func fetchFirebaseInitJSON(slug string) (cfg firebaseInitConfig, body []byte, ok bool) {
+	if v, hit := initJSONCache.Load(slug); hit {
+		e := v.(initJSONEntry)
+		return e.cfg, e.body, e.ok
+	}
+	var entry initJSONEntry
 	for _, host := range []string{slug + ".firebaseapp.com", slug + ".web.app"} {
 		code, b, err := doGet("https://" + host + "/__/firebase/init.json")
 		if err != nil || code != 200 {
 			continue
 		}
-		if json.Unmarshal(b, &cfg) == nil && cfg.AppID != "" {
-			return cfg, b, true
+		if json.Unmarshal(b, &entry.cfg) == nil && entry.cfg.AppID != "" {
+			entry.body, entry.ok = b, true
+			break
 		}
 	}
-	return firebaseInitConfig{}, nil, false
+	initJSONCache.Store(slug, entry)
+	return entry.cfg, entry.body, entry.ok
 }
 
 // firebaseInstall registers a Firebase Installation for the given app and
