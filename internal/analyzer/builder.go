@@ -62,7 +62,8 @@ func BuildChecks(testPhone, testEmail string) []ServiceCheck {
 		// finding — the discovery banner already mentions firebase-signup-jwt.
 		check4_22(),
 		check4_23(),
-		check4_24(),
+		checkFirebaseRemoteConfigFetch(),
+		checkFirebaseWebConfig(),
 		check4_25(),
 		checkFirebaseHosting(),
 		checkFirebaseExtensions(),
@@ -136,8 +137,6 @@ func BuildChecks(testPhone, testEmail string) []ServiceCheck {
 		check4_42(),
 		check4_43(),
 		check4_44(),
-		check4_45(),
-		check4_46(),
 		checkGeminiFiles(),
 		checkGeminiEmbeddings(),
 		checkGeminiTunedModels(),

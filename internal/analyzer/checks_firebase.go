@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1259,24 +1260,223 @@ curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?pre
 	}
 }
 
-func check4_24() ServiceCheck {
+// firebaseInitConfig mirrors the fields Firebase Hosting serves at the public
+// reserved URL /__/firebase/init.json — the same firebaseConfig object the web
+// SDK embeds. It always carries the project's web appId, which is the missing
+// ingredient for the Remote Config client fetch below.
+type firebaseInitConfig struct {
+	APIKey            string `json:"apiKey"`
+	AppID             string `json:"appId"`
+	AuthDomain        string `json:"authDomain"`
+	DatabaseURL       string `json:"databaseURL"`
+	LocationID        string `json:"locationId"`
+	MeasurementID     string `json:"measurementId"`
+	MessagingSenderID string `json:"messagingSenderId"`
+	ProjectID         string `json:"projectId"`
+	StorageBucket     string `json:"storageBucket"`
+	VapidKey          string `json:"vapidKey"`
+}
+
+// fetchFirebaseInitJSON GETs the public Firebase Hosting reserved-URL config for
+// a project slug. Firebase serves /__/firebase/init.json on both the
+// .firebaseapp.com auth domain and the .web.app hosting domain (no auth, no key
+// needed), so we try both and return on the first 200 that carries an appId.
+func fetchFirebaseInitJSON(slug string) (cfg firebaseInitConfig, body []byte, ok bool) {
+	for _, host := range []string{slug + ".firebaseapp.com", slug + ".web.app"} {
+		code, b, err := doGet("https://" + host + "/__/firebase/init.json")
+		if err != nil || code != 200 {
+			continue
+		}
+		if json.Unmarshal(b, &cfg) == nil && cfg.AppID != "" {
+			return cfg, b, true
+		}
+	}
+	return firebaseInitConfig{}, nil, false
+}
+
+// firebaseInstall registers a Firebase Installation for the given app and
+// returns the FIS auth token + installation id (fid). The Remote Config client
+// fetch endpoint authenticates the *installation* with this token while the API
+// key authorizes project access. Mirrors the installations probe in discovery.go.
+func firebaseInstall(projectNumber, appID, key string) (token, fid string, err error) {
+	u := "https://firebaseinstallations.googleapis.com/v1/projects/" + projectNumber + "/installations"
+	payload, _ := json.Marshal(map[string]interface{}{
+		"appId": appID, "authVersion": "FIS_v2", "sdkVersion": "w:0.6.4", "fid": "",
+	})
+	code, resp, err := doCustomCtx(context.Background(), "POST", u, payload, map[string]string{
+		"x-goog-api-key": key,
+		"Content-Type":   "application/json",
+	})
+	if err != nil {
+		return "", "", err
+	}
+	if code != 200 {
+		return "", "", fmt.Errorf("installations HTTP %d", code)
+	}
+	var parsed struct {
+		FID       string `json:"fid"`
+		AuthToken struct {
+			Token string `json:"token"`
+		} `json:"authToken"`
+	}
+	if json.Unmarshal(resp, &parsed) != nil || parsed.AuthToken.Token == "" {
+		return "", "", fmt.Errorf("installations: no auth token in response")
+	}
+	return parsed.AuthToken.Token, parsed.FID, nil
+}
+
+// checkFirebaseRemoteConfigFetch probes the CLIENT Remote Config endpoint
+// (namespaces/firebase:fetch) — the one the mobile/web SDKs actually use, which
+// accepts API-key auth — rather than the management /remoteConfig endpoint,
+// which rejects API keys outright (OAuth-only). A 200 returns the real config
+// values delivered to every install: feature flags, backend URLs, and any
+// secrets operators parked in config. The endpoint needs the project NUMBER plus
+// an appId; the appId is auto-discovered from the public Hosting init.json, and
+// when it can't be found the check silently skips (no appId fallback).
+func checkFirebaseRemoteConfigFetch() ServiceCheck {
+	const name = "Firebase Remote Config Possible Secret Leak"
 	return ServiceCheck{
-		Desc: "The key can fetch the project's Remote Config template, disclosing feature flags and any secrets operators embedded in config values.",
-		Name: "Firebase Remote Config Disclosure", Category: "Firebase", NeedsProject: true,
-		PoC: "curl -s 'https://firebaseremoteconfig.googleapis.com/v1/projects/{PROJECT}/remoteConfig?key={KEY}'",
-		Run: func(key, projectID string) CheckResult {
-			url := fmt.Sprintf("https://firebaseremoteconfig.googleapis.com/v1/projects/%s/remoteConfig?key=%s", projectID, key)
-			code, body, err := doGet(url)
+		Desc: "The key can fetch the project's client-delivered Remote Config via the SDK fetch endpoint. Remote Config is public by design, so this is surfaced only when the values appear to contain a secret operators wrongly embedded (e.g. a third-party API key or token) — review the flagged values before reporting.",
+		Name: name, Category: "Firebase", NeedsProject: true, NeedsProjectNumber: true,
+		RunWithNumber: func(key, projectID, projectNumber string) CheckResult {
+			// The client fetch needs the project's appId. We auto-discover it
+			// from the public Hosting init.json; if that isn't available there's
+			// no other source, so silently skip (NotVulnerable is hidden by
+			// default and stays out of the findings report).
+			cfg, _, ok := fetchFirebaseInitJSON(projectID)
+			if !ok || cfg.AppID == "" {
+				return cr(name, "Firebase", StatusNotVulnerable,
+					"appId not auto-discoverable (no public Hosting init.json) — Remote Config client fetch skipped", nil)
+			}
+			appID := cfg.AppID
+
+			token, fid, err := firebaseInstall(projectNumber, appID, key)
 			if err != nil {
-				return cr("Firebase Remote Config Disclosure", "Firebase", StatusError, err.Error(), nil)
+				return cr(name, "Firebase", StatusForbidden,
+					"Could not register a Firebase Installation for appId "+appID+" ("+err.Error()+")", nil)
+			}
+
+			u := "https://firebaseremoteconfig.googleapis.com/v1/projects/" + projectNumber + "/namespaces/firebase:fetch"
+			reqBody, _ := json.Marshal(map[string]interface{}{"appId": appID, "appInstanceId": fid})
+			code, resp, err := doCustomCtx(context.Background(), "POST", u, reqBody, map[string]string{
+				"X-Goog-Api-Key":                     key,
+				"X-Goog-Firebase-Installations-Auth": token,
+				"Content-Type":                       "application/json",
+			})
+			if err != nil {
+				return cr(name, "Firebase", StatusError, err.Error(), nil)
 			}
 			if code == 200 {
-				return cr("Firebase Remote Config Disclosure", "Firebase", StatusConfirmed, "", body)
+				var parsed struct {
+					Entries map[string]string `json:"entries"`
+				}
+				unmarshal(resp, &parsed)
+				keys := make([]string, 0, len(parsed.Entries))
+				for k := range parsed.Entries {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+
+				// RC is public-by-design: a successful read is informational on
+				// its own. It only becomes a finding when a value looks like a
+				// real secret operators misplaced here — detected via the
+				// secret-pattern scan over values plus a secret-named-param
+				// heuristic (guarded so boolean feature flags don't trip).
+				secretHits := scanForSecrets(resp)
+				var suspectParams []string
+				for _, k := range keys {
+					if looksSecretParam(k, parsed.Entries[k]) {
+						suspectParams = append(suspectParams, k)
+					}
+				}
+
+				if len(secretHits) == 0 && len(suspectParams) == 0 {
+					// By-design case (incl. empty config) — not a finding. Detail
+					// still records the surface for -v / audit.
+					detail := "Client fetch endpoint accepts the key (appId " + appID + ") but the project has no Remote Config parameters configured"
+					if len(keys) > 0 {
+						detail = fmt.Sprintf("%d Remote Config parameters readable via the client fetch endpoint (appId %s) — client-delivered config, public by design, no embedded secrets detected", len(keys), appID)
+					}
+					return cr(name, "Firebase", StatusNotVulnerable, detail, resp)
+				}
+
+				// Something looks sensitive → Potential (needs human review; a
+				// real-looking key in RC may still be an intentionally-public
+				// client credential).
+				detail := fmt.Sprintf("%d Remote Config parameters readable (appId %s) — POSSIBLE EMBEDDED SECRET, review", len(keys), appID)
+				if len(secretHits) > 0 {
+					detail += "; secret patterns in values: " + strings.Join(secretHits, ", ")
+				}
+				if len(suspectParams) > 0 {
+					shown := suspectParams
+					if len(shown) > 8 {
+						shown = shown[:8]
+					}
+					detail += "; secret-named params: " + strings.Join(shown, ", ")
+				}
+				result := cr(name, "Firebase", StatusPotential, detail, resp)
+				result.PoC = fmt.Sprintf(`# 1. Register a Firebase Installation to obtain a FIS auth token (appId from %s.firebaseapp.com/__/firebase/init.json)
+INSTALL=$(curl -s -X POST 'https://firebaseinstallations.googleapis.com/v1/projects/%s/installations' -H 'x-goog-api-key: %s' -H 'Content-Type: application/json' -d '{"appId":"%s","authVersion":"FIS_v2","sdkVersion":"w:0.6.4"}')
+FID=$(echo "$INSTALL" | jq -r .fid); TOKEN=$(echo "$INSTALL" | jq -r .authToken.token)
+# 2. Fetch the client-delivered Remote Config
+curl -s -X POST 'https://firebaseremoteconfig.googleapis.com/v1/projects/%s/namespaces/firebase:fetch' -H 'X-Goog-Api-Key: %s' -H "X-Goog-Firebase-Installations-Auth: ${TOKEN}" -H 'Content-Type: application/json' -d '{"appId":"%s","appInstanceId":"'"${FID}"'"}'`,
+					projectID, projectNumber, key, appID, projectNumber, key, appID)
+				return result
+			}
+			if code == 400 && isInvalidKeyResponse(resp) {
+				return cr(name, "Firebase", StatusForbidden, "Key rejected for Remote Config", resp)
 			}
 			if code == 401 || code == 403 {
-				return cr("Firebase Remote Config Disclosure", "Firebase", StatusForbidden, "Key valid, API not enabled", body)
+				return cr(name, "Firebase", StatusForbidden, "Key valid, Remote Config client fetch denied", resp)
 			}
-			return httpError("Firebase Remote Config Disclosure", "Firebase", code, body)
+			return httpError(name, "Firebase", code, resp)
+		},
+	}
+}
+
+// checkFirebaseWebConfig flags the public Hosting init.json only when it carries
+// a value BEYOND the standard public web config (apiKey/appId/etc., which are
+// public by design). Those expected fields are stripped before scanning, so the
+// always-present public apiKey never trips a finding — we only report a real
+// embedded secret.
+func checkFirebaseWebConfig() ServiceCheck {
+	const name = "Firebase Web Config Secret Exposure"
+	return ServiceCheck{
+		Desc: "The project's public Firebase Hosting config (/__/firebase/init.json) exposes a value beyond the standard public web config, indicating an embedded secret.",
+		Name: name, Category: "Firebase", NeedsProject: true,
+		PoC: "curl -s 'https://{PROJECT}.firebaseapp.com/__/firebase/init.json'",
+		Run: func(key, projectID string) CheckResult {
+			_, body, ok := fetchFirebaseInitJSON(projectID)
+			if !ok {
+				return cr(name, "Firebase", StatusForbidden,
+					"No public init.json served (project has no default Hosting/auth domain)", nil)
+			}
+			var raw map[string]json.RawMessage
+			if unmarshal(body, &raw) != nil {
+				return cr(name, "Firebase", StatusError, "init.json is not a JSON object", body)
+			}
+			known := map[string]bool{
+				"apiKey": true, "appId": true, "authDomain": true, "databaseURL": true,
+				"locationId": true, "measurementId": true, "messagingSenderId": true,
+				"projectId": true, "storageBucket": true, "vapidKey": true,
+			}
+			var extraKeys []string
+			var extra strings.Builder
+			for k, v := range raw {
+				if known[k] {
+					continue
+				}
+				extraKeys = append(extraKeys, k)
+				extra.Write(v)
+				extra.WriteByte('\n')
+			}
+			if hits := scanForSecrets([]byte(extra.String())); len(hits) > 0 {
+				sort.Strings(extraKeys)
+				return cr(name, "Firebase", StatusPotential,
+					"init.json exposes non-standard field(s) "+strings.Join(extraKeys, ", ")+" containing: "+strings.Join(hits, ", ")+" — review (publicly readable)", body)
+			}
+			return cr(name, "Firebase", StatusNotVulnerable,
+				"init.json contains only the standard public web config (no embedded secrets)", body)
 		},
 	}
 }

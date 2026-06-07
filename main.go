@@ -37,6 +37,7 @@ func main() {
 	flagJsonl := flag.String("j", "", "Save results to this file as JSONL.")
 	flagOutput := flag.String("o", "", "Save a human-readable summary of findings to this file.")
 	flagCategories := flag.String("categories", "", "Comma-separated list of test categories to run. Possibilities are: GCP, Firebase, Maps, Search, AI, Media, Identity. If nothing is specified, by default, all will be selected.")
+	flagExcludeCategories := flag.String("exclude-categories", "", "Comma-separated categories to EXCLUDE from the run (applied after -categories). Same possibilities as -categories. e.g. -exclude-categories Maps,Media")
 	flagTimeout := flag.Int("timeout", 30, "Per-request HTTP timeout in seconds.")
 	flagDualStack := flag.Bool("dual-stack", false, "Allow IPv6 (dual-stack) dialing. By default the analyzer dials IPv4 only, which avoids 'connect: network is unreachable' errors on hosts whose IPv6 route is present but black-holed. Set this only if you actually need IPv6 (e.g. an IPv6-only network).")
 	flagProxy := flag.String("proxy", "", "Route every HTTP request through this proxy (e.g. http://127.0.0.1:8080). Useful for inspecting traffic in Burp/mitmproxy. TLS verification is disabled while -proxy is set.")
@@ -154,6 +155,21 @@ func main() {
 		var filtered []analyzer.ServiceCheck
 		for _, c := range checks {
 			if allowed[c.Category] {
+				filtered = append(filtered, c)
+			}
+		}
+		checks = filtered
+	}
+
+	// Exclude categories if specified (applied after the include filter).
+	if *flagExcludeCategories != "" {
+		excluded := make(map[string]bool)
+		for _, c := range strings.Split(*flagExcludeCategories, ",") {
+			excluded[strings.TrimSpace(c)] = true
+		}
+		var filtered []analyzer.ServiceCheck
+		for _, c := range checks {
+			if !excluded[c.Category] {
 				filtered = append(filtered, c)
 			}
 		}

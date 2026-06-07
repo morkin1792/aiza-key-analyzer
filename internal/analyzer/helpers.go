@@ -153,6 +153,36 @@ var secretPatterns = []struct {
 	{"Private key block", regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----`)},
 }
 
+// secretParamNameRe matches config parameter NAMES that conventionally hold a
+// credential. Paired with a value-substance guard in looksSecretParam so
+// feature-flag params like "show_password_field" (boolean value) don't trip.
+var secretParamNameRe = regexp.MustCompile(`(?i)secret|token|password|passwd|api[_-]?key|private[_-]?key|credential|client_secret|access[_-]?key`)
+
+// looksSecretParam reports whether a config param looks credential-bearing: its
+// name matches a secret-ish word AND its value is substantial enough to
+// plausibly be one (≥12 chars, not a bool/null, not all-digits). Used to gate
+// Remote Config — where most params are public-by-design feature flags — up to a
+// Potential finding only when a value genuinely resembles a misplaced secret.
+func looksSecretParam(name, value string) bool {
+	if !secretParamNameRe.MatchString(name) {
+		return false
+	}
+	v := strings.TrimSpace(value)
+	if len(v) < 12 {
+		return false
+	}
+	switch strings.ToLower(v) {
+	case "true", "false", "null":
+		return false
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return true // contains a non-digit → not a plain number
+		}
+	}
+	return false // all digits → a numeric flag/threshold, not a secret
+}
+
 // scanForSecrets returns labels for any secret patterns matched in body.
 // De-duplicated, so a body with three AWS keys yields one entry.
 func scanForSecrets(body []byte) []string {
