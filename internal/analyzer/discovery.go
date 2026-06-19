@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // extractProjectIDFromJWT decodes a JWT's payload (without verification) and
@@ -99,6 +100,7 @@ func runFirebaseSignUp(escKey string) (CheckResult, string, firebaseSession) {
 			idToken:      resp.IDToken,
 			refreshToken: resp.RefreshToken,
 			localID:      resp.LocalID,
+			provider:     "anonymous",
 		}
 		// Not Vulnerable: signup alone has no impact. Every downstream use we
 		// can probe (Firestore/RTDB/Storage read+write) is its own check; if
@@ -112,10 +114,58 @@ func runFirebaseSignUp(escKey string) (CheckResult, string, firebaseSession) {
 	return httpError("Firebase Auth Signup", "Firebase", code, body), "", firebaseSession{}
 }
 
-// deleteAnonymousUser removes an anonymous user we created earlier so the scan
-// leaves no trace. Failure surfaces in Verbose mode only; cleanup is
+// runFirebaseEmailSignUp registers a real email/password user (random
+// aiza-poc-<ts>@no.invalid address) and returns the "Open Email/Password
+// Registration" finding plus the resulting session. Unlike checkEmailPasswordSignup
+// it does NOT delete the account — the caller keeps it alive to drive the
+// authenticated auth-bypass checks and deletes it at end of scan. A registered
+// user is a strict superset of an anonymous one for security-rule evaluation,
+// so this is the preferred session when signup is open. The key must already be
+// URL-encoded.
+func runFirebaseEmailSignUp(escKey string) (CheckResult, firebaseSession) {
+	const name = "Open Email/Password Registration"
+	email := fmt.Sprintf("aiza-poc-%d@no.invalid", time.Now().UnixNano())
+	u := "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + escKey
+	code, body, err := doPost(u, map[string]interface{}{
+		"email":             email,
+		"password":          "AizaPocAbc12345!",
+		"returnSecureToken": true,
+	})
+	if err != nil {
+		return cr(name, "Firebase", StatusError, err.Error(), nil), firebaseSession{}
+	}
+	if code == 200 {
+		var resp struct {
+			IDToken      string `json:"idToken"`
+			LocalID      string `json:"localId"`
+			RefreshToken string `json:"refreshToken"`
+		}
+		unmarshal(body, &resp)
+		sess := firebaseSession{
+			idToken:      resp.IDToken,
+			refreshToken: resp.RefreshToken,
+			localID:      resp.LocalID,
+			provider:     "password",
+		}
+		return cr(name, "Firebase", StatusConfirmed,
+			"Email+password signup is OPEN — registered "+email+" (UID "+resp.LocalID+"); used for auth-bypass probes and deleted at end of scan", body), sess
+	}
+	bodyStr := string(body)
+	if code == 400 && (strings.Contains(bodyStr, "OPERATION_NOT_ALLOWED") || strings.Contains(bodyStr, "PASSWORD_LOGIN_DISABLED")) {
+		return cr(name, "Firebase", StatusNotVulnerable,
+			"Email+password signup explicitly disabled in project — properly restricted", body), firebaseSession{}
+	}
+	if code == 400 || code == 401 || code == 403 {
+		return cr(name, "Firebase", StatusForbidden, "Key valid, signup rejected", body), firebaseSession{}
+	}
+	return httpError(name, "Firebase", code, body), firebaseSession{}
+}
+
+// deleteFirebaseUser removes a user we created earlier (anonymous or
+// email/password — accounts:delete works by idToken regardless of provider) so
+// the scan leaves no trace. Failure surfaces in Verbose mode only; cleanup is
 // best-effort hygiene and does not block the scan.
-func deleteAnonymousUser(escKey, idToken string) {
+func deleteFirebaseUser(escKey, idToken string) {
 	if idToken == "" {
 		return
 	}
@@ -125,9 +175,9 @@ func deleteAnonymousUser(escKey, idToken string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[CLEANUP] accounts:delete failed: %v\n", err)
 		} else if code != 200 {
-			fmt.Fprintf(os.Stderr, "[CLEANUP] accounts:delete returned HTTP %d — anon user may remain: %.200s\n", code, body)
+			fmt.Fprintf(os.Stderr, "[CLEANUP] accounts:delete returned HTTP %d — user may remain: %.200s\n", code, body)
 		} else {
-			fmt.Fprintln(os.Stderr, "[CLEANUP] anonymous user deleted")
+			fmt.Fprintln(os.Stderr, "[CLEANUP] Firebase user deleted")
 		}
 	}
 }

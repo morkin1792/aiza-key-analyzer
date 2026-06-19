@@ -130,7 +130,7 @@ curl -s "https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/(defau
 // ─── Storage user-folder probes (A4) ────────────────────────────────────────
 
 func storagePrefixHasItems(escKey, bucket, prefix, idToken string) bool {
-	status, n := storageListPrefix(escKey, bucket, prefix, idToken)
+	status, n, _ := storageListPrefix(escKey, bucket, prefix, idToken)
 	return status == StatusConfirmed && n > 0
 }
 
@@ -398,7 +398,7 @@ curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:delete?key={
 				hits = append(hits, "RTDB "+host+": "+rtdbCR.Detail)
 			}
 			// Storage root listing
-			sStatus, sDetail, _ := firebaseStorageList(key, projectID, resp.IDToken)
+			sStatus, sDetail, _, _ := firebaseStorageList(key, projectID, resp.IDToken)
 			if sStatus == StatusConfirmed {
 				hits = append(hits, "Storage: "+sDetail)
 			}

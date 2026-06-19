@@ -260,6 +260,37 @@ func rtdbProbe(projectID, idToken, authMode string) (CheckResult, string) {
 	return cr("Firebase RTDB Public Read Access", "Firebase", StatusForbidden, "No RTDB instance found (tried default, EU, Asia, and bare project name)", nil), ""
 }
 
+// scanRTDBData reads a bounded slice (scanRTDBBytes) of an open Realtime
+// Database root and returns scanForSecrets labels found in it. One capped read,
+// so an enormous database still costs at most scanRTDBBytes.
+func scanRTDBData(host, idToken string) []string {
+	u := "https://" + host + "/.json"
+	if idToken != "" {
+		u += "?auth=" + url.QueryEscape(idToken)
+	}
+	code, body, err := doGetCapped(context.Background(), u, nil, scanRTDBBytes)
+	if err != nil || code/100 != 2 {
+		return nil
+	}
+	return scanForSecrets(body)
+}
+
+// finalizeRTDBRead applies content secret-scanning to a confirmed RTDB read and
+// sets severity: a secret in the data keeps/makes it Confirmed; an otherwise
+// public root read (no secret, no auth-bypass) is downgraded to Potential since
+// public read can be intentional. authBypass results are already Confirmed and
+// only get any secret evidence appended.
+func finalizeRTDBRead(result CheckResult, host, idToken string, authBypass bool) CheckResult {
+	hits := scanRTDBData(host, idToken)
+	if authBypass || len(hits) > 0 {
+		return mergeSecretHits(result, hits, "RTDB DATA")
+	}
+	result.Status = StatusPotential
+	result.StatusS = StatusPotential.String()
+	result.Detail += " — public RTDB; review nodes for sensitive data"
+	return result
+}
+
 const rtdbAuthPoCTemplate = `# 1. Sign up anonymously to get an idToken
 TOKEN=$(curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={KEY}' -H 'Content-Type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
 # 2. Read RTDB root with the token (use the host from the finding detail)
@@ -278,11 +309,9 @@ func check4_23() ServiceCheck {
 		Run: func(key, projectID string) CheckResult {
 			result, host := rtdbProbe(projectID, "", "anon")
 			if result.Status == StatusConfirmed && host != "" {
-				// Public read at root → likely intentional for some apps; manual
-				// review needed to know if anything sensitive is exposed.
-				result.Status = StatusPotential
-				result.StatusS = StatusPotential.String()
-				result.Detail += " — public RTDB; review nodes for sensitive data"
+				// Scan a bounded sample of the data: a secret in it is a confirmed
+				// critical; an otherwise-public read is downgraded to review.
+				result = finalizeRTDBRead(result, host, "", false)
 				result.PoC = strings.ReplaceAll(rtdbAnonPoCTemplate, "{HOST}", host)
 			}
 			return result
@@ -294,16 +323,14 @@ func check4_23() ServiceCheck {
 			authOK := authed.Status == StatusConfirmed
 			// Auth-bypass: anon denied, but anon-signup JWT bypasses → clear misconfig.
 			if !anonOK && authOK {
-				poc := strings.ReplaceAll(rtdbAuthPoCTemplate, "{HOST}", authedHost)
 				authed.Detail += " — rules require auth but anonymous-signup JWT bypasses them"
-				authed.PoC = fillPoC(poc, key, projectID, "")
+				authed = finalizeRTDBRead(authed, authedHost, idToken, true) // stays Confirmed; appends any secrets
+				authed.PoC = fillPoC(strings.ReplaceAll(rtdbAuthPoCTemplate, "{HOST}", authedHost), key, projectID, "")
 				return authed
 			}
-			// Public read works → may be intentional; flag for manual review.
+			// Public read works → scan; secret = Confirmed, else review.
 			if anonOK {
-				anon.Status = StatusPotential
-				anon.StatusS = StatusPotential.String()
-				anon.Detail += " — public RTDB; review nodes for sensitive data"
+				anon = finalizeRTDBRead(anon, anonHost, "", false)
 				anon.PoC = strings.ReplaceAll(rtdbAnonPoCTemplate, "{HOST}", anonHost)
 				return anon
 			}
@@ -1161,8 +1188,8 @@ var commonStoragePrefixes = []string{
 	"media/", "images/", "videos/", "audio/",
 }
 
-func storageListPrefix(escKey, bucket, prefix, idToken string) (status Status, count int) {
-	u := fmt.Sprintf("https://firebasestorage.googleapis.com/v0/b/%s/o?prefix=%s&maxResults=5", bucket, url.QueryEscape(prefix))
+func storageListPrefix(escKey, bucket, prefix, idToken string) (status Status, count int, names []string) {
+	u := fmt.Sprintf("https://firebasestorage.googleapis.com/v0/b/%s/o?prefix=%s&maxResults=20", bucket, url.QueryEscape(prefix))
 	if escKey != "" {
 		u += "&key=" + escKey
 	}
@@ -1172,22 +1199,51 @@ func storageListPrefix(escKey, bucket, prefix, idToken string) (status Status, c
 	}
 	code, respBody, err := doCustomCtx(context.Background(), "GET", u, nil, headers)
 	if err != nil {
-		return StatusError, 0
+		return StatusError, 0, nil
 	}
 	if code == 200 {
 		var parsed struct {
-			Items []json.RawMessage `json:"items"`
+			Items []struct {
+				Name string `json:"name"`
+			} `json:"items"`
 		}
 		unmarshal(respBody, &parsed)
 		if len(parsed.Items) == 0 {
-			return StatusForbidden, 0
+			return StatusForbidden, 0, nil
 		}
-		return StatusConfirmed, len(parsed.Items)
+		ns := make([]string, 0, len(parsed.Items))
+		for _, it := range parsed.Items {
+			ns = append(ns, it.Name)
+		}
+		return StatusConfirmed, len(parsed.Items), ns
 	}
 	if code == 401 || code == 403 {
-		return StatusForbidden, 0
+		return StatusForbidden, 0, nil
 	}
-	return StatusError, 0
+	return StatusError, 0, nil
+}
+
+// storageObjFetch returns a bounded fetch for "bucket/name" candidates against
+// the Firebase Storage download endpoint, for use with scanObjectsForSecrets.
+func storageObjFetch(escKey, idToken string) func(string) []byte {
+	return func(c string) []byte {
+		i := strings.IndexByte(c, '/')
+		if i < 0 {
+			return nil
+		}
+		bucket, name := c[:i], c[i+1:]
+		u := fmt.Sprintf("https://firebasestorage.googleapis.com/v0/b/%s/o/%s?alt=media&key=%s",
+			bucket, url.QueryEscape(name), escKey)
+		h := map[string]string{}
+		if idToken != "" {
+			h["Authorization"] = "Bearer " + idToken
+		}
+		code, b, err := doGetCapped(context.Background(), u, h, scanRangeBytes)
+		if err != nil || code/100 != 2 {
+			return nil
+		}
+		return b
+	}
 }
 
 // storageRootReadable returns true when listing /o (no prefix) succeeds on
@@ -1195,7 +1251,7 @@ func storageListPrefix(escKey, bucket, prefix, idToken string) (status Status, c
 // succeed, making Storage Common Paths a redundant duplicate of Firebase
 // Storage. We use this to suppress the Common-Paths row in that case.
 func storageRootReadable(escKey, projectID, idToken string) bool {
-	status, _, _ := firebaseStorageList(escKey, projectID, idToken)
+	status, _, _, _ := firebaseStorageList(escKey, projectID, idToken)
 	return status == StatusConfirmed
 }
 
@@ -1213,25 +1269,30 @@ curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?pre
 					"Skipped — root listing on bucket /o already public (covered by Firebase Storage finding)", nil)
 			}
 			buckets := []string{projectID + ".appspot.com", projectID + ".firebasestorage.app"}
-			var hits []string
+			var hits, candidates []string
 			for _, b := range buckets {
-				var local []string
+				var local, localCand []string
 				var mu sync.Mutex
 				parallelProbe(commonStoragePrefixes, 8, func(p string) {
-					if s, n := storageListPrefix(key, b, p, ""); s == StatusConfirmed {
+					if s, n, names := storageListPrefix(key, b, p, ""); s == StatusConfirmed {
 						mu.Lock()
 						local = append(local, fmt.Sprintf("%s/%s (%d items)", b, p, n))
+						for _, nm := range names {
+							localCand = append(localCand, b+"/"+nm)
+						}
 						mu.Unlock()
 					}
 				})
 				if len(local) > 0 {
 					hits = local
+					candidates = localCand
 					break
 				}
 			}
 			if len(hits) > 0 {
-				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusPotential,
+				res := cr("Storage Public Listing (Common Paths)", "Firebase", StatusPotential,
 					"Public-readable prefixes (root denied): "+strings.Join(hits, ", ")+" — path-scoped rules grant access to specific prefixes; review listed objects", nil)
+				return mergeSecretHits(res, scanObjectsForSecrets(candidates, storageObjFetch(key, "")), "STORAGE OBJECTS")
 			}
 			return cr("Storage Public Listing (Common Paths)", "Firebase", StatusForbidden, "No common Storage prefix is anonymously listable", nil)
 		},
@@ -1244,26 +1305,34 @@ curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?pre
 			}
 			buckets := []string{projectID + ".appspot.com", projectID + ".firebasestorage.app"}
 			var workingBucket string
-			var anonHits, authHits []string
+			var anonHits, authHits, anonCand, authCand []string
 			for _, b := range buckets {
-				var localAnon, localAuth []string
+				var localAnon, localAuth, localAnonCand, localAuthCand []string
 				var mu sync.Mutex
 				parallelProbe(commonStoragePrefixes, 8, func(p string) {
-					anonS, anonN := storageListPrefix(key, b, p, "")
-					authS, authN := storageListPrefix(key, b, p, idToken)
+					anonS, anonN, anonNames := storageListPrefix(key, b, p, "")
+					authS, authN, authNames := storageListPrefix(key, b, p, idToken)
 					mu.Lock()
 					defer mu.Unlock()
 					if anonS == StatusConfirmed {
 						localAnon = append(localAnon, fmt.Sprintf("%s (%d)", p, anonN))
+						for _, nm := range anonNames {
+							localAnonCand = append(localAnonCand, b+"/"+nm)
+						}
 					}
 					if authS == StatusConfirmed {
 						localAuth = append(localAuth, fmt.Sprintf("%s (%d)", p, authN))
+						for _, nm := range authNames {
+							localAuthCand = append(localAuthCand, b+"/"+nm)
+						}
 					}
 				})
 				if len(localAnon) > 0 || len(localAuth) > 0 {
 					workingBucket = b
 					anonHits = localAnon
 					authHits = localAuth
+					anonCand = localAnonCand
+					authCand = localAuthCand
 					break
 				}
 			}
@@ -1278,12 +1347,14 @@ curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o?pre
 				}
 			}
 			if len(bypass) > 0 {
-				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusConfirmed,
+				res := cr("Storage Public Listing (Common Paths)", "Firebase", StatusConfirmed,
 					fmt.Sprintf("Auth-bypass listings on %s prefixes (root denied): %s — path-scoped rules require auth but anon-signup JWT bypasses", workingBucket, strings.Join(bypass, ", ")), nil)
+				return mergeSecretHits(res, scanObjectsForSecrets(authCand, storageObjFetch(key, idToken)), "STORAGE OBJECTS")
 			}
 			if len(anonHits) > 0 {
-				return cr("Storage Public Listing (Common Paths)", "Firebase", StatusPotential,
+				res := cr("Storage Public Listing (Common Paths)", "Firebase", StatusPotential,
 					fmt.Sprintf("Public-readable prefixes on %s (root denied): %s — review listed objects", workingBucket, strings.Join(anonHits, ", ")), nil)
+				return mergeSecretHits(res, scanObjectsForSecrets(anonCand, storageObjFetch(key, "")), "STORAGE OBJECTS")
 			}
 			return cr("Storage Public Listing (Common Paths)", "Firebase", StatusForbidden, "No common Storage prefix is readable", nil)
 		},

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -106,6 +107,35 @@ func doCustomCtx(parent context.Context, method, url string, body []byte, header
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+// doGetCapped GETs url transferring at most maxBytes, by both asking for a byte
+// range AND hard-capping the read with io.LimitReader. This makes the cost
+// constant regardless of the object's real size — a 1 TB object still costs only
+// maxBytes — and protects against servers that ignore Range. Used by the
+// content-secret scanner to sample exposed bucket objects safely.
+func doGetCapped(parent context.Context, url string, headers map[string]string, maxBytes int64) (int, []byte, error) {
+	ctx, cancel := context.WithTimeout(parent, Client.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("User-Agent", "aiza-key-analyzer/1.0")
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", maxBytes-1))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := Client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}

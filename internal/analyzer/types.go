@@ -114,6 +114,7 @@ type firebaseSession struct {
 	idToken      string
 	refreshToken string
 	localID      string
+	provider     string // "anonymous" or "password" — drives PoC signup snippet selection
 }
 
 type discoveryAccum struct {

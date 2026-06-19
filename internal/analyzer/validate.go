@@ -2,9 +2,26 @@ package analyzer
 
 import (
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
+
+// anonSignupPayload / emailSignupPayload are the curl `-d` bodies for the two
+// signup flavors. They appear (byte-identical) in every auth-bypass PoC, so a
+// single swap converts an anonymous-signup PoC into an email/password one.
+const (
+	anonSignupPayload  = `-d '{"returnSecureToken":true}'`
+	emailSignupPayload = `-d '{"email":"aiza-poc@no.invalid","password":"AizaPoc1!","returnSecureToken":true}'`
+)
+
+// rewriteSignupPoCForPassword swaps the anonymous-signup line embedded in an
+// auth-bypass PoC for the email/password equivalent so the PoC reproduces a
+// finding confirmed with a registered session. No-op when the PoC has no
+// anonymous-signup line.
+func rewriteSignupPoCForPassword(poc string) string {
+	return strings.ReplaceAll(poc, anonSignupPayload, emailSignupPayload)
+}
 
 // ValidateKey runs the full pipeline against one API key: gateway check,
 // project-ID discovery (when needed), session bootstrap, fan-out of every
@@ -85,14 +102,39 @@ func ValidateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 		}
 	}
 
-	// Ensure we have an anonymous Firebase session before the auth-aware checks
-	// fan out. Discovery would have created one already; this fills the gap
-	// when Resource Manager already gave us the project ID (so discovery never
-	// ran). Failure is Silent — auth-aware checks degrade gracefully and the
-	// signup result itself is intentionally not surfaced as a finding.
-	if session.idToken == "" {
-		_, _, sess := runFirebaseSignUp(escKey)
-		session = sess
+	// Session selection for the auth-aware checks. A registered email/password
+	// user is a strict superset of an anonymous one for security-rule evaluation
+	// (it also satisfies rules that exclude anonymous), so prefer it; fall back
+	// to any anonymous session discovery captured, then to a fresh anonymous
+	// signup. Track every account we create so all are deleted at end of scan —
+	// the discovery anonymous account would otherwise leak once the session is
+	// upgraded to email/password.
+	var createdTokens []string
+	if session.idToken != "" {
+		createdTokens = append(createdTokens, session.idToken) // discovery's anonymous account
+	}
+	emailResult, emailSess := runFirebaseEmailSignUp(escKey)
+	// Preserve the registered-signup finding's PoC, then serve it from cache so
+	// checkEmailPasswordSignup doesn't run again and create a second account.
+	if emailResult.Status == StatusConfirmed {
+		emailResult.PoC = "curl -s -X POST 'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=" + key +
+			`' -H 'Content-Type: application/json' -d '{"email":"aiza-poc@no.invalid","password":"AizaPoc1!","returnSecureToken":true}'`
+	}
+	if cachedChecks == nil {
+		cachedChecks = map[string]CheckResult{}
+	}
+	cachedChecks["Open Email/Password Registration"] = emailResult
+	if emailSess.idToken != "" {
+		session = emailSess
+		createdTokens = append(createdTokens, emailSess.idToken)
+	} else if session.idToken == "" {
+		// No registered session and discovery captured none — try anonymous now
+		// (e.g. Resource Manager gave us the project ID so discovery never ran).
+		_, _, anon := runFirebaseSignUp(escKey)
+		session = anon
+		if anon.idToken != "" {
+			createdTokens = append(createdTokens, anon.idToken)
+		}
 	}
 
 	// Progress tracker: live "N/Total checks complete" line on stderr so the
@@ -164,15 +206,32 @@ func ValidateKey(key, fallbackProject string, checks []ServiceCheck) KeyResult {
 	wg.Wait()
 	prog.Stop()
 
+	// If the session is a registered (email/password) user, rewrite the
+	// anonymous-signup line embedded in auth-bypass PoCs so each PoC actually
+	// reproduces the finding (the signup payload is the only difference, and it
+	// is byte-identical across every auth-bypass template).
+	if session.provider == "password" {
+		for i := range results {
+			results[i].PoC = rewriteSignupPoCForPassword(results[i].PoC)
+		}
+	}
+
 	for _, r := range results {
 		printResult(r)
 		kr.Results = append(kr.Results, r)
 	}
 
-	// Cleanup: delete the anonymous Firebase user we created. Best-effort,
-	// Silent on failure. This keeps the scan non-destructive — no leftover
-	// users in the target project's Auth user database.
-	deleteAnonymousUser(escKey, session.idToken)
+	// Cleanup: delete every Firebase user we created this scan (anonymous from
+	// discovery, the email/password session, and/or a fresh anonymous fallback).
+	// Best-effort, Silent on failure — keeps the scan non-destructive.
+	seenTokens := map[string]bool{}
+	for _, tok := range createdTokens {
+		if tok == "" || seenTokens[tok] {
+			continue
+		}
+		seenTokens[tok] = true
+		deleteFirebaseUser(escKey, tok)
+	}
 
 	return kr
 }

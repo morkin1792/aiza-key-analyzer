@@ -47,7 +47,7 @@ func main() {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "aiza-key-analyzer v%s\n", version)
-		fmt.Fprintln(os.Stderr, "Scans leaked Google API keys (AIza...) and reports potential findings for each key, together with their PoCs.\n")
+		fmt.Fprint(os.Stderr, "Scans leaked Google API keys (AIza...) and reports potential findings for each key, together with their PoCs.\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Options:")

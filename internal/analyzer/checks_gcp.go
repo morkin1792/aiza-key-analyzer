@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -960,7 +961,7 @@ func checkFirebaseExtensions() ServiceCheck {
 // returned on first 200, which meant an empty .firebasestorage.app bucket
 // would mask a populated .appspot.com one. We now walk every bucket and pick
 // the one with the highest item count (so "56 objects" beats "0 objects").
-func firebaseStorageList(escKey, projectID, idToken string) (status Status, detail string, body []byte) {
+func firebaseStorageList(escKey, projectID, idToken string) (status Status, detail string, body []byte, secretHits []string) {
 	buckets := []string{
 		projectID + ".firebasestorage.app",
 		projectID + ".appspot.com",
@@ -973,10 +974,11 @@ func firebaseStorageList(escKey, projectID, idToken string) (status Status, deta
 		return d
 	}
 	type hit struct {
-		bucket string
-		body   []byte
-		count  int
-		names  []string
+		bucket   string
+		body     []byte
+		count    int
+		names    []string // sample for display
+		allNames []string // full list for bounded content scanning
 	}
 	var hits []hit
 	var lastForbidden []byte
@@ -999,10 +1001,14 @@ func firebaseStorageList(escKey, projectID, idToken string) (status Status, deta
 			unmarshal(respBody, &parsed)
 			n := len(parsed.Items)
 			names := make([]string, 0, min(5, n))
-			for i := 0; i < min(5, n); i++ {
-				names = append(names, parsed.Items[i].Name)
+			all := make([]string, 0, n)
+			for i, it := range parsed.Items {
+				if i < 5 {
+					names = append(names, it.Name)
+				}
+				all = append(all, it.Name)
 			}
-			hits = append(hits, hit{bucket: bucket, body: respBody, count: n, names: names})
+			hits = append(hits, hit{bucket: bucket, body: respBody, count: n, names: names, allNames: all})
 			continue
 		}
 		if code == 401 || code == 403 {
@@ -1020,12 +1026,28 @@ func firebaseStorageList(escKey, projectID, idToken string) (status Status, deta
 		if idToken != "" {
 			mode = "auth bypass via anonymous signup"
 		}
-		return StatusConfirmed, summarize(best.body, best.bucket, mode, best.count, best.names), best.body
+		// Bounded content scan: download a sample of secret-shaped objects (each
+		// range-capped) and look for credentials.
+		fetch := func(name string) []byte {
+			fu := fmt.Sprintf("https://firebasestorage.googleapis.com/v0/b/%s/o/%s?alt=media&key=%s",
+				best.bucket, url.QueryEscape(name), escKey)
+			fh := map[string]string{}
+			if idToken != "" {
+				fh["Authorization"] = "Bearer " + idToken
+			}
+			code, b, err := doGetCapped(context.Background(), fu, fh, scanRangeBytes)
+			if err != nil || code/100 != 2 {
+				return nil
+			}
+			return b
+		}
+		return StatusConfirmed, summarize(best.body, best.bucket, mode, best.count, best.names), best.body,
+			scanObjectsForSecrets(best.allNames, fetch)
 	}
 	if lastForbidden != nil {
-		return StatusForbidden, "Security rules deny read", lastForbidden
+		return StatusForbidden, "Security rules deny read", lastForbidden, nil
 	}
-	return StatusForbidden, "No Firebase Storage bucket found (tried .firebasestorage.app and .appspot.com)", nil
+	return StatusForbidden, "No Firebase Storage bucket found (tried .firebasestorage.app and .appspot.com)", nil, nil
 }
 
 const storageAuthPoCTemplate = `# 1. Sign up anonymously to get an idToken
@@ -1042,19 +1064,21 @@ func checkFirebaseStorage() ServiceCheck {
 		// without involving the leaked credential.
 		PoC: "curl -s 'https://firebasestorage.googleapis.com/v0/b/{PROJECT}.appspot.com/o'",
 		Run: func(key, projectID string) CheckResult {
-			status, detail, body := firebaseStorageList(key, projectID, "")
+			status, detail, body, hits := firebaseStorageList(key, projectID, "")
 			if status == StatusConfirmed {
-				// Public read without auth — almost always intentional (banner
-				// images, public assets). Promote to Potential so the operator
-				// reviews contents for accidentally-public sensitive data.
+				// A real secret in the objects is a confirmed critical; otherwise
+				// public read is often intentional → Potential for manual review.
+				if len(hits) > 0 {
+					return mergeSecretHits(cr("Firebase Storage Public Listing", "Firebase", StatusConfirmed, detail, body), hits, "STORAGE OBJECTS")
+				}
 				return cr("Firebase Storage Public Listing", "Firebase", StatusPotential,
 					detail+" — public bucket; review listed objects for accidentally-exposed sensitive data", body)
 			}
 			return cr("Firebase Storage Public Listing", "Firebase", status, detail, body)
 		},
 		RunAuth: func(key, projectID, idToken string) CheckResult {
-			anonStatus, anonDetail, anonBody := firebaseStorageList(key, projectID, "")
-			authStatus, authDetail, authBody := firebaseStorageList(key, projectID, idToken)
+			anonStatus, anonDetail, anonBody, anonHits := firebaseStorageList(key, projectID, "")
+			authStatus, authDetail, authBody, authHits := firebaseStorageList(key, projectID, idToken)
 			anonOK := anonStatus == StatusConfirmed
 			authOK := authStatus == StatusConfirmed
 			// Auth-bypass: rules required auth, but anonymous-signup token slipped past.
@@ -1063,11 +1087,13 @@ func checkFirebaseStorage() ServiceCheck {
 				result := cr("Firebase Storage Public Listing", "Firebase", StatusConfirmed,
 					authDetail+" — rules require auth but anonymous-signup JWT bypasses them (likely misconfiguration)", authBody)
 				result.PoC = fillPoC(storageAuthPoCTemplate, key, projectID, "")
-				return result
+				return mergeSecretHits(result, authHits, "STORAGE OBJECTS")
 			}
-			// Public read works → likely intentional, may still contain
-			// accidentally-public sensitive data → Potential.
+			// Public read works → secret in objects = Confirmed; else review.
 			if anonOK {
+				if len(anonHits) > 0 {
+					return mergeSecretHits(cr("Firebase Storage Public Listing", "Firebase", StatusConfirmed, anonDetail, anonBody), anonHits, "STORAGE OBJECTS")
+				}
 				return cr("Firebase Storage Public Listing", "Firebase", StatusPotential,
 					anonDetail+" — public bucket; review listed objects for accidentally-exposed sensitive data", anonBody)
 			}

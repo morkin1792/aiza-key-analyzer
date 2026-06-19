@@ -1,7 +1,9 @@
 package analyzer
 
 import (
+	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -920,15 +922,16 @@ func checkGCSCommonBuckets() ServiceCheck {
 		Run: func(key, projectID string) CheckResult {
 			suffixes := []string{"", "-staging", "-prod", "-dev", "-uploads", "-backup", "-public", "-private", "-data", "-media", "-assets", "-files"}
 			type bucketHit struct {
-				bucket string
-				count  int
-				sample []string
+				bucket   string
+				count    int
+				sample   []string
+				allNames []string
 			}
 			var hits []bucketHit
 			var mu sync.Mutex
 			parallelProbe(suffixes, 8, func(sfx string) {
 				bucket := projectID + sfx
-				u := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b/%s/o?key=%s&maxResults=5", bucket, key)
+				u := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b/%s/o?key=%s&maxResults=200", bucket, key)
 				code, body, err := doGet(u)
 				if err != nil || code != 200 {
 					return
@@ -940,26 +943,51 @@ func checkGCSCommonBuckets() ServiceCheck {
 				}
 				unmarshal(body, &resp)
 				names := make([]string, 0, min(3, len(resp.Items)))
-				for i := 0; i < min(3, len(resp.Items)); i++ {
-					names = append(names, resp.Items[i].Name)
+				all := make([]string, 0, len(resp.Items))
+				for i, it := range resp.Items {
+					if i < 3 {
+						names = append(names, it.Name)
+					}
+					all = append(all, it.Name)
 				}
 				mu.Lock()
-				hits = append(hits, bucketHit{bucket: bucket, count: len(resp.Items), sample: names})
+				hits = append(hits, bucketHit{bucket: bucket, count: len(resp.Items), sample: names, allNames: all})
 				mu.Unlock()
 			})
 			if len(hits) == 0 {
 				return cr("GCS Common Bucket Exposure", "GCP", StatusForbidden, "No common-named buckets are publicly listable", nil)
 			}
 			parts := make([]string, 0, len(hits))
+			// Build one global candidate list across all listable buckets, encoded
+			// as "bucket/object", so a single bounded scan covers every bucket.
+			var candidates []string
 			for _, h := range hits {
 				p := fmt.Sprintf("%s (%d objects)", h.bucket, h.count)
 				if len(h.sample) > 0 {
 					p += ": " + strings.Join(h.sample, ", ")
 				}
 				parts = append(parts, p)
+				for _, name := range h.allNames {
+					candidates = append(candidates, h.bucket+"/"+name)
+				}
 			}
-			return cr("GCS Common Bucket Exposure", "GCP", StatusConfirmed,
+			secretHits := scanObjectsForSecrets(candidates, func(c string) []byte {
+				i := strings.IndexByte(c, '/')
+				if i < 0 {
+					return nil
+				}
+				bucket, name := c[:i], c[i+1:]
+				fu := fmt.Sprintf("https://storage.googleapis.com/storage/v1/b/%s/o/%s?alt=media&key=%s",
+					bucket, url.QueryEscape(name), key)
+				code, b, err := doGetCapped(context.Background(), fu, nil, scanRangeBytes)
+				if err != nil || code/100 != 2 {
+					return nil
+				}
+				return b
+			})
+			res := cr("GCS Common Bucket Exposure", "GCP", StatusConfirmed,
 				"Anonymously-listable GCS bucket(s) found by common-name enumeration: "+strings.Join(parts, " | "), nil)
+			return mergeSecretHits(res, secretHits, "GCS OBJECTS")
 		},
 	}
 }
